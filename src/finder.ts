@@ -4,8 +4,7 @@
  * Layout: a compact, filterable, scrollable list of one-line **headers** with a
  * **detail/preview pane** beneath that shows the focused result's title, its
  * project path / date / message count, and a longer keyword-centered snippet
- * (the search terms highlighted) — so you can scan many results and inspect the
- * right one without the list itself getting cluttered.
+ * (the search terms highlighted).
  *
  * UX (fzf-like):
  *   - type            → fuzzy-filter the results live (over header + snippet)
@@ -13,14 +12,16 @@
  *   - Enter           → jump to the focused session
  *   - Esc / Ctrl+C    → cancel
  *
- * Built from @earendil-works/pi-tui primitives: `Input` (filter) + `SelectList`
- * (scrolling header list). The list is rebuilt per keystroke so we can use true
- * fuzzy matching (SelectList.setFilter is prefix-on-value only).
+ * Implementation note: the filter is tracked as a plain string and rendered as
+ * a plain text line — we deliberately do NOT embed a focused `Input` component.
+ * A focused Input emits a CURSOR_MARKER and participates in pi's focus/render
+ * bookkeeping in a way that, inside `ctx.ui.custom`, makes previous frames
+ * persist (rows looked duplicated on navigation). Staying structurally close to
+ * pi's `preset.ts` example (SelectList + plain text lines, no Input) avoids it.
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
-	Input,
 	SelectList,
 	fuzzyFilter,
 	matchesKey,
@@ -93,9 +94,19 @@ function padTo(lines: string[], n: number): string[] {
 	return out;
 }
 
+/** True for a key sequence that should be inserted into the filter text. */
+function isPrintable(data: string): boolean {
+	return (
+		data.length > 0 &&
+		data[0] !== "\x1b" &&
+		data.charCodeAt(0) >= 0x20 &&
+		data !== "\x7f" // DEL — handled as backspace
+	);
+}
+
 /**
- * Focusable finder component. Return an instance from `ctx.ui.custom(...)`;
- * wire `onSelect` / `onCancel` and set `requestRender` to the TUI's redraw hook.
+ * Finder component. Return an instance from `ctx.ui.custom(...)`; wire `onSelect`
+ * / `onCancel` and set `requestRender` to the TUI's redraw hook.
  */
 export class FinderComponent implements Component {
 	private readonly theme: Theme;
@@ -103,7 +114,7 @@ export class FinderComponent implements Component {
 	private readonly maxVisible: number;
 	private readonly entries: FinderEntry[];
 	private readonly byPath: Map<string, FinderEntry>;
-	private readonly input = new Input();
+	private readonly filter: { value: string } = { value: "" };
 	private list: SelectList;
 	private focusedEntry: FinderEntry | null;
 
@@ -120,10 +131,6 @@ export class FinderComponent implements Component {
 		this.byPath = new Map(this.entries.map((e) => [e.path, e]));
 		this.focusedEntry = this.entries[0] ?? null;
 		this.list = this.makeList(this.headerItems());
-		// NOTE: the Input is intentionally left UNFOCUSED. A focused Input emits a
-		// CURSOR_MARKER that, inside ctx.ui.custom, breaks the redraw line
-		// accounting and makes previous frames persist (duplicate-looking rows).
-		// handleInput/getValue work regardless of focus, so the filter still works.
 	}
 
 	private headerItems(): SelectItem[] {
@@ -154,7 +161,7 @@ export class FinderComponent implements Component {
 
 	/** Recompute the visible list from the current filter text (fuzzy). */
 	private refreshFilter(): void {
-		const q = this.input.getValue().trim();
+		const q = this.filter.value.trim();
 		const all = this.headerItems();
 		const items = q
 			? fuzzyFilter(all, q, (it) => {
@@ -165,8 +172,6 @@ export class FinderComponent implements Component {
 		this.list = this.makeList(items);
 		this.focusedEntry = items[0] ? (this.byPath.get(items[0].value) ?? null) : null;
 	}
-
-	// ── Input focus is intentionally off (see constructor note) ──────────
 
 	handleInput(data: string): void {
 		if (
@@ -183,10 +188,15 @@ export class FinderComponent implements Component {
 			if (sel) this.onSelect?.(sel.value);
 		} else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
 			this.onCancel?.();
+		} else if (matchesKey(data, "backspace") || data === "\x7f" || data === "\b") {
+			if (this.filter.value.length > 0) {
+				this.filter.value = this.filter.value.slice(0, -1);
+				this.refreshFilter();
+			}
 		} else if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
-			// single field — swallow so focus never leaves the filter
-		} else {
-			this.input.handleInput(data);
+			// swallow — single filter field
+		} else if (isPrintable(data)) {
+			this.filter.value += data;
 			this.refreshFilter();
 		}
 		this.requestRender();
@@ -199,10 +209,10 @@ export class FinderComponent implements Component {
 		lines.push(th.fg("accent", th.bold(this.title)));
 		lines.push(th.fg("dim", "type to filter  ·  ↑↓ navigate  ·  enter jump  ·  esc cancel"));
 
-		// Filter input, with a dim prompt prefix.
-		const prefix = th.fg("dim", "filter: ");
-		const [inputLine = ""] = this.input.render(Math.max(1, width - 8));
-		lines.push(prefix + inputLine);
+		// Filter line (plain text — no Input component / no cursor marker).
+		const placeholder = th.fg("dim", "type to filter…");
+		const filterLine = this.filter.value ? this.filter.value : placeholder;
+		lines.push(truncateToWidth(`${th.fg("dim", "filter: ")}${filterLine}`, width, "…"));
 
 		// Scrollable header list — pad to maxVisible so the component height is fixed.
 		lines.push(...padTo(this.list.render(width), this.maxVisible));
@@ -228,7 +238,11 @@ export class FinderComponent implements Component {
 	}
 
 	invalidate(): void {
-		this.input.invalidate();
 		this.list.invalidate();
+	}
+
+	/** Test/debug hook: current filter text. */
+	getFilterValue(): string {
+		return this.filter.value;
 	}
 }

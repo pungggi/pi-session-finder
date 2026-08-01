@@ -95,13 +95,19 @@ export default function (pi: ExtensionAPI) {
 			// Pick a session path (or null on cancel) via the mode-appropriate UI.
 			let targetPath: string | null = null;
 			if (ctx.mode === "tui") {
-				targetPath = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
-					const finder = new FinderComponent({ title, entries, theme });
-					finder.onSelect = (path) => done(path);
-					finder.onCancel = () => done(null);
-					finder.requestRender = () => tui.requestRender();
-					return finder;
-				});
+				// Render as a centered overlay: overlays are redrawn fresh each frame in
+				// their own managed box, so navigation/filtering never leaves stale rows
+				// (an inline ctx.ui.custom component taller than the editor area does).
+				targetPath = await ctx.ui.custom<string | null>(
+					(tui, theme, _kb, done) => {
+						const finder = new FinderComponent({ title, entries, theme });
+						finder.onSelect = (path) => done(path);
+						finder.onCancel = () => done(null);
+						finder.requestRender = () => tui.requestRender();
+						return finder;
+					},
+					{ overlay: true, overlayOptions: { width: "90%", maxHeight: "70%", anchor: "center" } },
+				);
 			} else {
 				// RPC: fall back to the flat select picker. Map each label back to a path.
 				const labelToPath = new Map<string, string>();
