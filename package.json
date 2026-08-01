@@ -1,6 +1,6 @@
 {
   "name": "pi-session-finder",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Cross-project session search & jump for pi. Adds /find <keywords> that full-text searches every past session across all projects and switches to the match — like /resume, but driven by content search.",
   "keywords": [
     "pi-package",
@@ -26,10 +26,12 @@
     "node": ">=20.0.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.74.0"
+    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@earendil-works/pi-tui": ">=0.83.0"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@earendil-works/pi-tui": ">=0.83.0",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.0",
     "vitest": "^3.0.0"
