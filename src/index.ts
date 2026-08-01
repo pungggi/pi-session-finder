@@ -24,17 +24,6 @@ import {
 	type RankedMatch,
 	type SessionInfoLike,
 } from "./search.js";
-import { appendFileSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-
-/** Strip ANSI escape codes (for measuring visible width in debug logging). */
-const stripAnsi = (s: string): string =>
-	s.replace(
-		// eslint-disable-next-line no-control-regex
-		/[\u001b\u009b][[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g,
-		"",
-	);
 
 /** Cap on rows kept after ranking; ranking keeps the best on top (PRD §8.5). */
 const MAX_RESULTS = 200;
@@ -108,55 +97,13 @@ export default function (pi: ExtensionAPI) {
 			if (ctx.mode === "tui") {
 				// Render as a centered overlay: overlays are redrawn fresh each frame in
 				// their own managed box, so navigation/filtering never leaves stale rows
-				// (an inline ctx.ui.custom component taller than the editor area does).
-				//
-				// DEBUG INSTRUMENTATION (temporary): logs pi's internal newLines/previousLines
-				// state per keypress to ~/.pi/agent/finder-debug.log, to determine whether
-				// the full-screen line array grows per keypress (append-stacking) or stays
-				// constant (diff/cursor desync). The factory receives the live TUI.
-				const dbgPath = join(homedir(), ".pi", "agent", "finder-debug.log");
+				// (an inline ctx.ui.custom component taller than the editor area can).
 				targetPath = await ctx.ui.custom<string | null>(
 					(tui, theme, _kb, done) => {
 						const finder = new FinderComponent({ title, entries, theme });
 						finder.onSelect = (path) => done(path);
 						finder.onCancel = () => done(null);
-						const dt = tui as unknown as {
-							render: (w: number) => string[];
-							previousLines: string[];
-							maxLinesRendered: number;
-							terminal?: { columns?: number };
-							overlayStack?: unknown[];
-							requestRender: () => void;
-						};
-						const writeDebug = (tag: string) => {
-							try {
-								const cols = dt.terminal?.columns ?? -1;
-								const prevLen = dt.previousLines?.length ?? -1;
-								const maxR = dt.maxLinesRendered ?? -1;
-								const overlays = dt.overlayStack?.length ?? -1;
-								let newLen = -1;
-								try {
-									newLen = dt.render(cols).length; // preview full-screen newLines
-								} catch {
-									/* ignore render errors */
-								}
-								const mine = finder.render(cols);
-								const mineVisible = mine.map((l: string) => stripAnsi(l).length);
-								const lines = [
-									`\n[${new Date().toISOString()}] ${tag}: cols=${cols} prevLines=${prevLen} newScreenLen=${newLen} maxLinesRendered=${maxR} overlays=${overlays} myRenderLen=${mine.length} myVisibleWidths=[${mineVisible.join(",")}]`,
-									...mine.map((l: string, i: number) => `   my[${i}] ${JSON.stringify(stripAnsi(l)).slice(0, 100)}`),
-								];
-								mkdirSync(dirname(dbgPath), { recursive: true });
-								appendFileSync(dbgPath, lines.join("\n") + "\n");
-							} catch {
-								/* never break the UI over logging */
-							}
-						};
-						finder.requestRender = () => {
-							writeDebug("requestRender");
-							tui.requestRender();
-						};
-						writeDebug("init");
+						finder.requestRender = () => tui.requestRender();
 						return finder;
 					},
 					{ overlay: true, overlayOptions: { width: "90%", maxHeight: "70%", anchor: "center" } },

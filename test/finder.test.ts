@@ -140,4 +140,33 @@ describe("FinderComponent", () => {
 		const out = f.render(80).join("\n");
 		expect(out).not.toContain(CURSOR_MARKER);
 	});
+
+	it("REGRESSION: collapses embedded newlines in session text to one row per line", () => {
+		// Real session text (first user line) can contain blank lines / newlines.
+		// A rendered "line" with an embedded \n desyncs pi's differential renderer
+		// (it treats each array entry as one physical row) and stacks stale frames.
+		const multiline = [
+			{
+				path: "/m.jsonl",
+				header: "check @PRD and @RESEARCH\n\nwhat can we · pkg · 5h · 2 msg",
+				title: "check @PRD\nand\t@RESEARCH",
+				detail: "/projM\n· 2025-01-04",
+				snippet: "line one\n\nline two\tline three",
+				terms: ["prD"],
+			},
+		];
+		const f = new FinderComponent({ title: "t", entries: multiline, theme });
+		const rows = f.render(80);
+		// No single rendered row may contain a newline or other control char.
+		for (const row of rows) {
+			expect(row).not.toMatch(/[\u0000-\u001f\u007f]/);
+		}
+		// And the label row keeps the post-newline text on the SAME row.
+		const labels = rows.filter((r) => r.includes("what can we"));
+		expect(labels.length).toBe(1);
+		// Navigation must not drift height once newlines are collapsed.
+		const base = rows.length;
+		f.handleInput("\x1b[B");
+		expect(f.render(80).length).toBe(base);
+	});
 });

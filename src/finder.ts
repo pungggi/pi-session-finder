@@ -69,6 +69,13 @@ function highlight(text: string, terms: string[], theme: Theme): string {
 	}
 }
 
+/** Collapse all whitespace (incl. newlines/tabs) and strip control chars so the
+ * result is a single terminal row. A rendered "line" must NEVER contain embedded
+ * newlines: pi's differential renderer treats each array entry as one physical
+ * row, and an embedded \n desyncs the hardware cursor so stale frames stack. */
+const singleLine = (s: string): string =>
+	s.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+
 /** Word-wrap plain text into at most `maxLines` lines, each ≤ `width`. */
 function wrapWords(text: string, width: number, maxLines: number): string[] {
 	const words = text.split(/\s+/).filter(Boolean);
@@ -134,7 +141,7 @@ export class FinderComponent implements Component {
 	}
 
 	private headerItems(): SelectItem[] {
-		return this.entries.map((e) => ({ value: e.path, label: e.header }));
+		return this.entries.map((e) => ({ value: e.path, label: singleLine(e.header) }));
 	}
 
 	private listTheme(): SelectListTheme {
@@ -220,10 +227,10 @@ export class FinderComponent implements Component {
 		// Separator + detail/preview pane for the focused result (fixed height).
 		lines.push(th.fg("dim", "─".repeat(width)));
 		const e = this.focusedEntry;
-		const snippetLines = e ? wrapWords(e.snippet, width, 2) : [];
+		const snippetLines = e ? wrapWords(singleLine(e.snippet), width, 2) : [];
 		if (e) {
-			lines.push(th.fg("accent", th.bold(truncateToWidth(e.title, width, "…"))));
-			lines.push(th.fg("muted", truncateToWidth(e.detail, width, "…")));
+			lines.push(th.fg("accent", th.bold(truncateToWidth(singleLine(e.title), width, "…"))));
+			lines.push(th.fg("muted", truncateToWidth(singleLine(e.detail), width, "…")));
 		} else {
 			lines.push(th.fg("warning", "  No matching sessions"));
 			lines.push("");
