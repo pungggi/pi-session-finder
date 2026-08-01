@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CURSOR_MARKER } from "@earendil-works/pi-tui";
 import { FinderComponent } from "../src/finder.js";
 
 /**
@@ -130,5 +131,13 @@ describe("FinderComponent", () => {
 		expect(f.render(80).length).toBe(base);
 		type(f, "xyz"); // filter matches nothing (empty list, shorter preview)
 		expect(f.render(80).length).toBe(base);
+	});
+
+	it("never emits a CURSOR_MARKER (would make ctx.ui.custom redraw leave stale rows)", () => {
+		const f = new FinderComponent({ title: "t", entries, theme });
+		type(f, "stripe");
+		f.handleInput("\x1b[B");
+		const out = f.render(80).join("\n");
+		expect(out).not.toContain(CURSOR_MARKER);
 	});
 });

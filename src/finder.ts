@@ -26,7 +26,6 @@ import {
 	matchesKey,
 	truncateToWidth,
 	type Component,
-	type Focusable,
 	type SelectItem,
 	type SelectListTheme,
 } from "@earendil-works/pi-tui";
@@ -98,7 +97,7 @@ function padTo(lines: string[], n: number): string[] {
  * Focusable finder component. Return an instance from `ctx.ui.custom(...)`;
  * wire `onSelect` / `onCancel` and set `requestRender` to the TUI's redraw hook.
  */
-export class FinderComponent implements Component, Focusable {
+export class FinderComponent implements Component {
 	private readonly theme: Theme;
 	private readonly title: string;
 	private readonly maxVisible: number;
@@ -107,7 +106,6 @@ export class FinderComponent implements Component, Focusable {
 	private readonly input = new Input();
 	private list: SelectList;
 	private focusedEntry: FinderEntry | null;
-	private _focused = false;
 
 	onSelect?: (path: string) => void;
 	onCancel?: () => void;
@@ -122,7 +120,10 @@ export class FinderComponent implements Component, Focusable {
 		this.byPath = new Map(this.entries.map((e) => [e.path, e]));
 		this.focusedEntry = this.entries[0] ?? null;
 		this.list = this.makeList(this.headerItems());
-		this.input.focused = true; // show the filter cursor for the modal's lifetime
+		// NOTE: the Input is intentionally left UNFOCUSED. A focused Input emits a
+		// CURSOR_MARKER that, inside ctx.ui.custom, breaks the redraw line
+		// accounting and makes previous frames persist (duplicate-looking rows).
+		// handleInput/getValue work regardless of focus, so the filter still works.
 	}
 
 	private headerItems(): SelectItem[] {
@@ -165,14 +166,7 @@ export class FinderComponent implements Component, Focusable {
 		this.focusedEntry = items[0] ? (this.byPath.get(items[0].value) ?? null) : null;
 	}
 
-	// ── Focusable: propagate focus to the Input so its cursor renders ─────
-	get focused(): boolean {
-		return this._focused;
-	}
-	set focused(v: boolean) {
-		this._focused = v;
-		this.input.focused = v;
-	}
+	// ── Input focus is intentionally off (see constructor note) ──────────
 
 	handleInput(data: string): void {
 		if (
