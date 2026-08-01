@@ -1,0 +1,53 @@
+{
+  "name": "pi-session-finder",
+  "version": "0.1.0",
+  "description": "Cross-project session search & jump for pi. Adds /find <keywords> that full-text searches every past session across all projects and switches to the match — like /resume, but driven by content search.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi.dev",
+    "pi-extension",
+    "session",
+    "search",
+    "find",
+    "resume",
+    "navigation"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.ts",
+  "files": [
+    "src",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.74.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "prepublishOnly": "node -e \"if(!process.env.CI)throw new Error('publish via release.yml CI: push a v* tag. Manual npm publish is blocked.')\"",
+    "test": "vitest run",
+    "test:watch": "vitest watch",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run test"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
