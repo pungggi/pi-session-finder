@@ -27,31 +27,27 @@ import {
 
 /** Cap on rows kept after ranking; ranking keeps the best on top (PRD §8.5). */
 const MAX_RESULTS = 200;
-/** Max snippet length folded into a row. */
-const SNIPPET_CAP = 100;
+/** Snippet window for the TUI preview pane (richer than a cramped row). */
+const PREVIEW_SNIPPET_CHARS = 220;
 
-/** Truncate to `n` visible chars with an ellipsis. */
-function truncate(s: string, n: number): string {
-	return s.length <= n ? s : s.slice(0, Math.max(0, n - 1)) + "…";
+/** ISO yyyy-mm-dd for display. */
+function day(d: Date): string {
+	return d.toISOString().slice(0, 10);
 }
 
-/** Build finder rows (label + meta/snippet) shared by the TUI and RPC pickers. */
+/** Build finder rows (header + preview fields) shared by the TUI and RPC pickers. */
 function buildEntries(matches: RankedMatch[]): FinderEntry[] {
+	const previewCfg = { ...DEFAULT_CONFIG, snippetChars: PREVIEW_SNIPPET_CHARS };
 	return matches.map((m) => {
 		const title =
 			m.info.name?.trim() ||
-			m.info.firstMessage.slice(0, 60).trim() ||
+			m.info.firstMessage.slice(0, 80).trim() ||
 			"(untitled session)";
-		const meta = `${projName(m.info.cwd)} · ${ago(m.info.modified)} · ${m.info.messageCount} msg`;
-		const snippet = truncate(
-			extractSnippet(m.info.allMessagesText, m.terms, DEFAULT_CONFIG),
-			SNIPPET_CAP,
-		);
-		return {
-			path: m.info.path,
-			label: title,
-			description: snippet ? `${meta}  —  ${snippet}` : meta,
-		};
+		const project = projName(m.info.cwd);
+		const header = `${title}  ·  ${project}  ·  ${ago(m.info.modified)}  ·  ${m.info.messageCount} msg`;
+		const detail = `${m.info.cwd || "(unknown project)"}  ·  modified ${day(m.info.modified)}  ·  ${m.info.messageCount} messages`;
+		const snippet = extractSnippet(m.info.allMessagesText, m.terms, previewCfg);
+		return { path: m.info.path, header, title, detail, snippet, terms: m.terms };
 	});
 }
 
@@ -110,7 +106,7 @@ export default function (pi: ExtensionAPI) {
 				// RPC: fall back to the flat select picker. Map each label back to a path.
 				const labelToPath = new Map<string, string>();
 				const options = entries.map((e) => {
-					let label = `${e.label}  —  ${e.description}`;
+					let label = e.snippet ? `${e.header}  —  ${e.snippet}` : e.header;
 					if (labelToPath.has(label)) {
 						let n = 2;
 						while (labelToPath.has(`${label} (#${n})`)) n++;
@@ -129,7 +125,7 @@ export default function (pi: ExtensionAPI) {
 			// Capture only plain data for withSession: the old command `ctx` is stale
 			// after replacement (PRD §8.3 / extensions.md "footguns").
 			const picked = entries.find((e) => e.path === targetPath);
-			const pickName = picked?.label ?? "session";
+			const pickName = picked?.title ?? "session";
 			const pickProject = projName(
 				capped.find((m) => m.info.path === targetPath)?.info.cwd ?? "",
 			);

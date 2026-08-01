@@ -1,44 +1,50 @@
 /**
- * pi-session-finder — interactive TUI finder component.
+ * pi-session-finder — interactive TUI finder component (PRD §7).
  *
- * A scrollable, filterable session picker (PRD §7 "FinderComponent"). Replaces
- * the flat `ctx.ui.select` list used by the MVP, which is not navigable when a
- * query yields many matches.
+ * Layout: a compact, filterable, scrollable list of one-line **headers** with a
+ * **detail/preview pane** beneath that shows the focused result's title, its
+ * project path / date / message count, and a longer keyword-centered snippet
+ * (the search terms highlighted) — so you can scan many results and inspect the
+ * right one without the list itself getting cluttered.
  *
  * UX (fzf-like):
- *   - type            → fuzzy-filter the results live (over label + description)
- *   - ↑/↓, PgUp/PgDn  → move selection (the list scrolls within `maxVisible`)
+ *   - type            → fuzzy-filter the results live (over header + snippet)
+ *   - ↑/↓, PgUp/PgDn  → move selection; the preview pane follows the focus
  *   - Enter           → jump to the focused session
  *   - Esc / Ctrl+C    → cancel
  *
- * Built from @earendil-works/pi-tui primitives: `Input` (filter field) +
- * `SelectList` (scrolling list). The list is rebuilt per keystroke so we can use
- * true fuzzy matching (SelectList.setFilter is prefix-on-value only).
+ * Built from @earendil-works/pi-tui primitives: `Input` (filter) + `SelectList`
+ * (scrolling header list). The list is rebuilt per keystroke so we can use true
+ * fuzzy matching (SelectList.setFilter is prefix-on-value only).
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
-	Container,
 	Input,
 	SelectList,
-	Text,
 	fuzzyFilter,
 	matchesKey,
+	truncateToWidth,
 	type Component,
 	type Focusable,
 	type SelectItem,
-	type SelectListLayoutOptions,
 	type SelectListTheme,
 } from "@earendil-works/pi-tui";
 
-/** One row in the finder. */
+/** One result, carrying everything the list row and the preview pane need. */
 export interface FinderEntry {
 	/** Absolute session path (returned on selection). */
 	path: string;
-	/** Primary row text — the session title. */
-	label: string;
-	/** Secondary row text — meta + snippet. */
-	description: string;
+	/** One-line list label: "title · project · ago · N msg". */
+	header: string;
+	/** Preview line 1 — the session title (fuller). */
+	title: string;
+	/** Preview line 2 — "cwd · modified DATE · N messages". */
+	detail: string;
+	/** Preview line 3+ — longer, keyword-centered snippet. */
+	snippet: string;
+	/** Effective query terms, for highlighting in the snippet. */
+	terms: string[];
 }
 
 export interface FinderOptions {
@@ -46,10 +52,39 @@ export interface FinderOptions {
 	title: string;
 	entries: FinderEntry[];
 	theme: Theme;
-	/** Visible rows before scrolling. Default 12. */
+	/** Visible header rows before scrolling. Default 8 (leaves room for preview). */
 	maxVisible?: number;
-	/** Cap on the primary (label) column width so the snippet stays visible. */
-	maxPrimaryColumnWidth?: number;
+}
+
+const escapeRegex = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Wrap matched query terms in the accent color (case-insensitive). */
+function highlight(text: string, terms: string[], theme: Theme): string {
+	const ts = [...new Set(terms.map((t) => t.trim()).filter(Boolean))].map(escapeRegex);
+	if (ts.length === 0) return text;
+	try {
+		return text.replace(new RegExp(`(${ts.join("|")})`, "gi"), (m) => theme.fg("accent", m));
+	} catch {
+		return text; // bad regex pattern — fall back to plain
+	}
+}
+
+/** Word-wrap plain text into at most `maxLines` lines, each ≤ `width`. */
+function wrapWords(text: string, width: number, maxLines: number): string[] {
+	const words = text.split(/\s+/).filter(Boolean);
+	const lines: string[] = [];
+	let cur = "";
+	for (const w of words) {
+		const cand = cur ? `${cur} ${w}` : w;
+		if (cand.length <= width) cur = cand;
+		else {
+			if (cur) lines.push(cur);
+			cur = w;
+			if (lines.length >= maxLines) break;
+		}
+	}
+	if (cur && lines.length < maxLines) lines.push(cur);
+	return lines.slice(0, maxLines);
 }
 
 /**
@@ -60,11 +95,11 @@ export class FinderComponent implements Component, Focusable {
 	private readonly theme: Theme;
 	private readonly title: string;
 	private readonly maxVisible: number;
-	private readonly layout: SelectListLayoutOptions;
-	private readonly allItems: SelectItem[];
-	private readonly container = new Container();
+	private readonly entries: FinderEntry[];
+	private readonly byPath: Map<string, FinderEntry>;
 	private readonly input = new Input();
 	private list: SelectList;
+	private focusedEntry: FinderEntry | null;
 	private _focused = false;
 
 	onSelect?: (path: string) => void;
@@ -75,28 +110,16 @@ export class FinderComponent implements Component, Focusable {
 	constructor(opts: FinderOptions) {
 		this.theme = opts.theme;
 		this.title = opts.title;
-		this.maxVisible = opts.maxVisible ?? 12;
-		this.layout = { maxPrimaryColumnWidth: opts.maxPrimaryColumnWidth ?? 42 };
-		this.allItems = opts.entries.map((e) => ({
-			value: e.path,
-			label: e.label,
-			description: e.description,
-		}));
+		this.maxVisible = opts.maxVisible ?? 8;
+		this.entries = opts.entries;
+		this.byPath = new Map(this.entries.map((e) => [e.path, e]));
+		this.focusedEntry = this.entries[0] ?? null;
+		this.list = this.makeList(this.headerItems());
+		this.input.focused = true; // show the filter cursor for the modal's lifetime
+	}
 
-		this.container.addChild(new Text(this.theme.fg("accent", this.theme.bold(this.title)), 1, 0));
-		this.container.addChild(
-			new Text(
-				this.theme.fg("dim", "type to filter  ·  ↑↓ navigate  ·  enter jump  ·  esc cancel"),
-				1,
-				0,
-			),
-		);
-		this.container.addChild(this.input);
-		this.list = this.makeList(this.allItems);
-		this.container.addChild(this.list);
-
-		// Show the filter cursor immediately (modal owns input for its lifetime).
-		this.input.focused = true;
+	private headerItems(): SelectItem[] {
+		return this.entries.map((e) => ({ value: e.path, label: e.header }));
 	}
 
 	private listTheme(): SelectListTheme {
@@ -112,22 +135,27 @@ export class FinderComponent implements Component, Focusable {
 
 	private makeList(items: SelectItem[]): SelectList {
 		const visible = items.length ? Math.min(items.length, this.maxVisible) : this.maxVisible;
-		const list = new SelectList(items, visible, this.listTheme(), this.layout);
+		const list = new SelectList(items, visible, this.listTheme());
 		list.onSelect = (item) => this.onSelect?.(item.value);
 		list.onCancel = () => this.onCancel?.();
+		list.onSelectionChange = (item) => {
+			this.focusedEntry = this.byPath.get(item.value) ?? null;
+		};
 		return list;
 	}
 
 	/** Recompute the visible list from the current filter text (fuzzy). */
 	private refreshFilter(): void {
 		const q = this.input.getValue().trim();
+		const all = this.headerItems();
 		const items = q
-			? fuzzyFilter(this.allItems, q, (i) => `${i.label} ${i.description ?? ""}`)
-			: this.allItems;
-		const next = this.makeList(items);
-		const idx = this.container.children.indexOf(this.list);
-		if (idx !== -1) this.container.children[idx] = next;
-		this.list = next;
+			? fuzzyFilter(all, q, (it) => {
+					const e = this.byPath.get(it.value);
+					return e ? `${e.header} ${e.snippet}` : it.label;
+				})
+			: all;
+		this.list = this.makeList(items);
+		this.focusedEntry = items[0] ? (this.byPath.get(items[0].value) ?? null) : null;
 	}
 
 	// ── Focusable: propagate focus to the Input so its cursor renders ─────
@@ -164,10 +192,38 @@ export class FinderComponent implements Component, Focusable {
 	}
 
 	render(width: number): string[] {
-		return this.container.render(width);
+		const th = this.theme;
+		const lines: string[] = [];
+
+		lines.push(th.fg("accent", th.bold(this.title)));
+		lines.push(th.fg("dim", "type to filter  ·  ↑↓ navigate  ·  enter jump  ·  esc cancel"));
+
+		// Filter input, with a dim prompt prefix.
+		const prefix = th.fg("dim", "filter: ");
+		const [inputLine = ""] = this.input.render(Math.max(1, width - 8));
+		lines.push(prefix + inputLine);
+
+		// Scrollable header list.
+		lines.push(...this.list.render(width));
+
+		// Separator + detail/preview pane for the focused result.
+		lines.push(th.fg("dim", "─".repeat(width)));
+		const e = this.focusedEntry;
+		if (e) {
+			lines.push(th.fg("accent", th.bold(truncateToWidth(e.title, width, "…"))));
+			lines.push(th.fg("muted", truncateToWidth(e.detail, width, "…")));
+			for (const l of wrapWords(e.snippet, width, 2)) {
+				lines.push(highlight(truncateToWidth(l, width, "…"), e.terms, th));
+			}
+		} else {
+			lines.push(th.fg("warning", "  No matching sessions"));
+		}
+
+		return lines;
 	}
 
 	invalidate(): void {
-		this.container.invalidate();
+		this.input.invalidate();
+		this.list.invalidate();
 	}
 }
