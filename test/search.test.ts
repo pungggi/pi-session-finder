@@ -179,11 +179,12 @@ describe("extractSnippet", () => {
 		expect(snip).toContain("rareterm");
 	});
 
-	it("collapses newlines into spaces", () => {
+	it("preserves newlines (structure for markdown) but caps blank lines", () => {
 		const text = "line one\n\n\nstripe\nline two";
 		const snip = extractSnippet(text, ["stripe"], DEFAULT_CONFIG);
-		expect(snip).not.toContain("\n");
+		expect(snip).toContain("\n"); // newlines preserved, not flattened
 		expect(snip).toContain("stripe");
+		expect(snip).not.toMatch(/\n{3,}/); // 3+ blank lines collapsed to a single blank line
 	});
 
 	it("does not slice a word in half at the boundaries", () => {

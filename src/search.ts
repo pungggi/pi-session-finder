@@ -207,8 +207,17 @@ export function rankMatches(
 }
 
 /** Collapse runs of whitespace (incl. newlines) to single spaces. */
-function collapseWhitespace(s: string): string {
-	return s.replace(/\s+/g, " ").trim();
+/** Normalize a snippet window for display: collapse inline whitespace to a
+ * single space but PRESERVE newlines (and cap blank lines) so downstream markdown
+ * rendering keeps headings, lists, tables and code on their own lines — instead
+ * of flattening everything into one wrapped paragraph. */
+function normalizeForSnippet(s: string): string {
+	return s
+		.replace(/\r\n?/g, "\n")
+		.replace(/[^\S\n]+/g, " ")
+		.replace(/ *\n */g, "\n")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
 }
 
 /**
@@ -269,7 +278,7 @@ export function extractSnippet(
 
 	const prefix = start > 0 ? "…" : "";
 	const suffix = end < len ? "…" : "";
-	return prefix + collapseWhitespace(text.slice(start, end)) + suffix;
+	return prefix + normalizeForSnippet(text.slice(start, end)) + suffix;
 }
 
 /**
