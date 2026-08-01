@@ -20,13 +20,15 @@
  * pi's `preset.ts` example (SelectList + plain text lines, no Input) avoids it.
  */
 
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import {
+	Markdown,
 	SelectList,
 	fuzzyFilter,
 	matchesKey,
 	truncateToWidth,
 	type Component,
+	type MarkdownTheme,
 	type SelectItem,
 	type SelectListTheme,
 } from "@earendil-works/pi-tui";
@@ -64,43 +66,12 @@ export interface FinderOptions {
 
 export const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
 
-const escapeRegex = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-/** Wrap matched query terms in the accent color (case-insensitive). */
-function highlight(text: string, terms: string[], theme: Theme): string {
-	const ts = [...new Set(terms.map((t) => t.trim()).filter(Boolean))].map(escapeRegex);
-	if (ts.length === 0) return text;
-	try {
-		return text.replace(new RegExp(`(${ts.join("|")})`, "gi"), (m) => theme.fg("accent", m));
-	} catch {
-		return text; // bad regex pattern — fall back to plain
-	}
-}
-
 /** Collapse all whitespace (incl. newlines/tabs) and strip control chars so the
  * result is a single terminal row. A rendered "line" must NEVER contain embedded
  * newlines: pi's differential renderer treats each array entry as one physical
  * row, and an embedded \n desyncs the hardware cursor so stale frames stack. */
 const singleLine = (s: string): string =>
 	s.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
-
-/** Word-wrap plain text into at most `maxLines` lines, each ≤ `width`. */
-function wrapWords(text: string, width: number, maxLines: number): string[] {
-	const words = text.split(/\s+/).filter(Boolean);
-	const lines: string[] = [];
-	let cur = "";
-	for (const w of words) {
-		const cand = cur ? `${cur} ${w}` : w;
-		if (cand.length <= width) cur = cand;
-		else {
-			if (cur) lines.push(cur);
-			cur = w;
-			if (lines.length >= maxLines) break;
-		}
-	}
-	if (cur && lines.length < maxLines) lines.push(cur);
-	return lines.slice(0, maxLines);
-}
 
 /** True for a key sequence that should be inserted into the filter text. */
 function isPrintable(data: string): boolean {
@@ -127,6 +98,10 @@ export class FinderComponent implements Component {
 	private readonly filter: { value: string } = { value: "" };
 	private list: SelectList;
 	private focusedEntry: FinderEntry | null;
+	/** Markdown renderer (pi's own chat renderer) for the preview snippet. */
+	private readonly markdownTheme: MarkdownTheme;
+	private md: Markdown | null = null;
+	private mdText = "";
 
 	onSelect?: (path: string) => void;
 	onCancel?: () => void;
@@ -139,6 +114,9 @@ export class FinderComponent implements Component {
 		this.entries = opts.entries;
 		this.byPath = new Map(this.entries.map((e) => [e.path, e]));
 		this.focusedEntry = this.entries[0] ?? null;
+		// Reuse pi's chat markdown theme so the preview looks like the real chat
+		// (tables, headings, code blocks, lists, bold, …).
+		this.markdownTheme = getMarkdownTheme();
 
 		// Layout caps. When targetHeight (terminal-derived) is set the picker fills
 		// the available rows: the list takes ~55%, the preview snippet fills the
@@ -234,7 +212,6 @@ export class FinderComponent implements Component {
 		lines.push(truncateToWidth(`${th.fg("dim", "filter: ")}${filterLine}`, width, "…"));
 
 		// Scrollable header list — show one row per match (capped at maxVisible by
-		// Scrollable header list — show one row per match (capped at maxVisible by
 		// the SelectList scroll window). No list padding: the snippet fills any
 		// leftover height instead, so blanks (when any) sit at the bottom.
 		const listRows = this.list.render(width);
@@ -250,12 +227,21 @@ export class FinderComponent implements Component {
 		if (e) {
 			lines.push(th.fg("accent", th.bold(truncateToWidth(singleLine(e.title), width, "…"))));
 			lines.push(th.fg("muted", truncateToWidth(singleLine(e.detail), width, "…")));
-			// Preview snippet — wrapped to the budget (fills the height), highlighted.
-			const snippetLines = wrapWords(singleLine(e.snippet), width, snippetBudget);
-			for (let i = 0; i < snippetBudget; i++) {
-				const l = snippetLines[i] ?? "";
-				lines.push(highlight(truncateToWidth(l, width, "…"), e.terms, th));
+			// Preview snippet rendered as MARKDOWN via pi's own chat renderer, so
+			// headings, lists, tables and code blocks keep their structure instead of
+			// collapsing into a wall of text. Cached per snippet text. Each output line
+			// is split on any stray newline / \r-stripped / width-capped, so no array
+			// entry ever carries an embedded newline (renderer-safe).
+			if (this.mdText !== e.snippet) {
+				this.md = new Markdown(e.snippet.trim(), 0, 0, this.markdownTheme);
+				this.mdText = e.snippet;
 			}
+			const mdLines = (this.md?.render(width) ?? [])
+				.flatMap((l) => l.split(/\r?\n/))
+				.map((l) => truncateToWidth(l.replace(/\r/g, ""), width, "…"))
+				.slice(0, snippetBudget);
+			while (mdLines.length < snippetBudget) mdLines.push("");
+			lines.push(...mdLines);
 		} else {
 			lines.push(th.fg("warning", "  No matching sessions"));
 			lines.push("");

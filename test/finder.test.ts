@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { CURSOR_MARKER } from "@earendil-works/pi-tui";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import { FinderComponent } from "../src/finder.js";
+
+// The preview renders snippets through pi's Markdown component, whose theme
+// functions read the global theme — initialize it once for this suite.
+initTheme();
 
 /**
  * Integration test for the TUI finder: exercises the REAL @earendil-works/pi-tui
@@ -183,5 +188,30 @@ describe("FinderComponent", () => {
 		expect(h).toBe(30); // chrome(6) + list + snippet budget == targetHeight
 		f.handleInput("\x1b[B"); // navigation must not drift height
 		expect(f.render(80).length).toBe(h);
+	});
+
+	it("renders the preview snippet as markdown (headings/lists/tables keep structure)", () => {
+		const md = [
+			{
+				path: "/m.jsonl",
+				header: "capacities · proj · 1m · 2 msg",
+				title: "Capacities research",
+				detail: "/proj · 2025-01-01 · 2 messages",
+				snippet:
+					"# Capacities object model\n\n" +
+					"| You create | It becomes |\n|---|---|\n| Meeting notes | Meeting object |\n\n" +
+					"- left sidebar = object types\n- no folder hierarchy\n\n" +
+					"**Bottom line:** the PRD is solid.",
+				terms: ["capacities"],
+			},
+		];
+		const f = new FinderComponent({ title: "t", entries: md, theme, targetHeight: 30 });
+		const rows = f.render(80);
+		const out = rows.join("\n");
+		expect(out).toContain("Capacities object model"); // heading rendered
+		expect(out).toContain("left sidebar = object types"); // list item rendered
+		expect(out).toContain("Meeting object"); // table cell rendered
+		// Renderer-safe: no array entry may carry an embedded newline (the desync bug).
+		for (const row of rows) expect(row).not.toMatch(/[\n\r]/);
 	});
 });
