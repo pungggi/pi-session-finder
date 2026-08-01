@@ -1,6 +1,6 @@
 {
   "name": "pi-session-finder",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Cross-project session search & jump for pi. Adds /find <keywords> that full-text searches every past session across all projects and switches to the match — like /resume, but driven by content search.",
   "keywords": [
     "pi-package",

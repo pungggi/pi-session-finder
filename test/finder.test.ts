@@ -117,4 +117,18 @@ describe("FinderComponent", () => {
 		f.handleInput("\x1b[B"); // ↓
 		expect(renderText(f)).toContain("payments"); // entries[1].title
 	});
+
+	it("render height is constant across navigation and filtering (no frame drift)", () => {
+		const f = new FinderComponent({ title: "t", entries, theme, maxVisible: 8 });
+		const base = f.render(80).length;
+		expect(base).toBeGreaterThan(0);
+		f.handleInput("\x1b[B"); // ↓
+		expect(f.render(80).length).toBe(base);
+		f.handleInput("\x1b[A"); // ↑
+		expect(f.render(80).length).toBe(base);
+		type(f, "stripe"); // filter narrows the list below maxVisible
+		expect(f.render(80).length).toBe(base);
+		type(f, "xyz"); // filter matches nothing (empty list, shorter preview)
+		expect(f.render(80).length).toBe(base);
+	});
 });

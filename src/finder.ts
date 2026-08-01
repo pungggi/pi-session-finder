@@ -87,6 +87,13 @@ function wrapWords(text: string, width: number, maxLines: number): string[] {
 	return lines.slice(0, maxLines);
 }
 
+/** Pad/truncate a line array to exactly `n` entries (fixed render height). */
+function padTo(lines: string[], n: number): string[] {
+	const out = lines.slice(0, n);
+	while (out.length < n) out.push("");
+	return out;
+}
+
 /**
  * Focusable finder component. Return an instance from `ctx.ui.custom(...)`;
  * wire `onSelect` / `onCancel` and set `requestRender` to the TUI's redraw hook.
@@ -203,20 +210,24 @@ export class FinderComponent implements Component, Focusable {
 		const [inputLine = ""] = this.input.render(Math.max(1, width - 8));
 		lines.push(prefix + inputLine);
 
-		// Scrollable header list.
-		lines.push(...this.list.render(width));
+		// Scrollable header list — pad to maxVisible so the component height is fixed.
+		lines.push(...padTo(this.list.render(width), this.maxVisible));
 
-		// Separator + detail/preview pane for the focused result.
+		// Separator + detail/preview pane for the focused result (fixed height).
 		lines.push(th.fg("dim", "─".repeat(width)));
 		const e = this.focusedEntry;
+		const snippetLines = e ? wrapWords(e.snippet, width, 2) : [];
 		if (e) {
 			lines.push(th.fg("accent", th.bold(truncateToWidth(e.title, width, "…"))));
 			lines.push(th.fg("muted", truncateToWidth(e.detail, width, "…")));
-			for (const l of wrapWords(e.snippet, width, 2)) {
-				lines.push(highlight(truncateToWidth(l, width, "…"), e.terms, th));
-			}
 		} else {
 			lines.push(th.fg("warning", "  No matching sessions"));
+			lines.push("");
+		}
+		// Always exactly two snippet lines (highlighted) — keeps the frame stable.
+		for (let i = 0; i < 2; i++) {
+			const l = snippetLines[i] ?? "";
+			lines.push(e ? highlight(truncateToWidth(l, width, "…"), e.terms, th) : "");
 		}
 
 		return lines;
