@@ -14,7 +14,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { FinderComponent, type FinderEntry } from "./finder.js";
+import { FinderComponent, clamp, type FinderEntry } from "./finder.js";
 import {
 	DEFAULT_CONFIG,
 	ago,
@@ -28,7 +28,7 @@ import {
 /** Cap on rows kept after ranking; ranking keeps the best on top (PRD §8.5). */
 const MAX_RESULTS = 200;
 /** Snippet window for the TUI preview pane (richer than a cramped row). */
-const PREVIEW_SNIPPET_CHARS = 220;
+const PREVIEW_SNIPPET_CHARS = 4000;
 
 /** ISO yyyy-mm-dd for display. */
 function day(d: Date): string {
@@ -100,13 +100,17 @@ export default function (pi: ExtensionAPI) {
 				// (an inline ctx.ui.custom component taller than the editor area can).
 				targetPath = await ctx.ui.custom<string | null>(
 					(tui, theme, _kb, done) => {
-						const finder = new FinderComponent({ title, entries, theme });
+						// Size the picker to fill ~82% of the terminal height: more visible
+						// matches and a much larger preview/context pane on tall terms.
+						const rows = (tui as { terminal?: { rows?: number } }).terminal?.rows ?? 24;
+						const targetHeight = clamp(Math.floor(rows * 0.82), 14, Math.max(14, rows - 2));
+						const finder = new FinderComponent({ title, entries, theme, targetHeight });
 						finder.onSelect = (path) => done(path);
 						finder.onCancel = () => done(null);
 						finder.requestRender = () => tui.requestRender();
 						return finder;
 					},
-					{ overlay: true, overlayOptions: { width: "90%", maxHeight: "70%", anchor: "center" } },
+					{ overlay: true, overlayOptions: { width: "90%", maxHeight: "85%", anchor: "center" } },
 				);
 			} else {
 				// RPC: fall back to the flat select picker. Map each label back to a path.

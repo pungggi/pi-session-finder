@@ -52,9 +52,17 @@ export interface FinderOptions {
 	title: string;
 	entries: FinderEntry[];
 	theme: Theme;
-	/** Visible header rows before scrolling. Default 8 (leaves room for preview). */
+	/** Target total component height in rows. When set, the list and preview
+	 * snippet are sized to fill it (more matches + more context on tall terms).
+	 * Overrides are still honored via maxVisible/snippetLines. */
+	targetHeight?: number;
+	/** Visible header rows before scrolling. Overrides the target-derived value. */
 	maxVisible?: number;
+	/** Preview snippet rows. Overrides the target-derived value. */
+	snippetLines?: number;
 }
+
+export const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
 
 const escapeRegex = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -94,13 +102,6 @@ function wrapWords(text: string, width: number, maxLines: number): string[] {
 	return lines.slice(0, maxLines);
 }
 
-/** Pad/truncate a line array to exactly `n` entries (fixed render height). */
-function padTo(lines: string[], n: number): string[] {
-	const out = lines.slice(0, n);
-	while (out.length < n) out.push("");
-	return out;
-}
-
 /** True for a key sequence that should be inserted into the filter text. */
 function isPrintable(data: string): boolean {
 	return (
@@ -119,6 +120,8 @@ export class FinderComponent implements Component {
 	private readonly theme: Theme;
 	private readonly title: string;
 	private readonly maxVisible: number;
+	private readonly maxSnippet: number;
+	private readonly targetHeight?: number;
 	private readonly entries: FinderEntry[];
 	private readonly byPath: Map<string, FinderEntry>;
 	private readonly filter: { value: string } = { value: "" };
@@ -133,10 +136,19 @@ export class FinderComponent implements Component {
 	constructor(opts: FinderOptions) {
 		this.theme = opts.theme;
 		this.title = opts.title;
-		this.maxVisible = opts.maxVisible ?? 8;
 		this.entries = opts.entries;
 		this.byPath = new Map(this.entries.map((e) => [e.path, e]));
 		this.focusedEntry = this.entries[0] ?? null;
+
+		// Layout caps. When targetHeight (terminal-derived) is set the picker fills
+		// the available rows: the list takes ~55%, the preview snippet fills the
+		// rest up to maxSnippet. render() derives the per-frame snippet budget from
+		// the actual visible list rows so the total tracks targetHeight closely.
+		this.targetHeight = opts.targetHeight;
+		this.maxVisible =
+			opts.maxVisible ?? (opts.targetHeight ? clamp(Math.floor(opts.targetHeight * 0.55), 6, 30) : 8);
+		this.maxSnippet = opts.snippetLines ?? (opts.targetHeight ? clamp(opts.targetHeight - 12, 8, 24) : 4);
+
 		this.list = this.makeList(this.headerItems());
 	}
 
@@ -221,24 +233,32 @@ export class FinderComponent implements Component {
 		const filterLine = this.filter.value ? this.filter.value : placeholder;
 		lines.push(truncateToWidth(`${th.fg("dim", "filter: ")}${filterLine}`, width, "…"));
 
-		// Scrollable header list — pad to maxVisible so the component height is fixed.
-		lines.push(...padTo(this.list.render(width), this.maxVisible));
+		// Scrollable header list — show one row per match (capped at maxVisible by
+		// Scrollable header list — show one row per match (capped at maxVisible by
+		// the SelectList scroll window). No list padding: the snippet fills any
+		// leftover height instead, so blanks (when any) sit at the bottom.
+		const listRows = this.list.render(width);
+		lines.push(...listRows);
 
-		// Separator + detail/preview pane for the focused result (fixed height).
+		// Separator + detail/preview pane for the focused result.
 		lines.push(th.fg("dim", "─".repeat(width)));
 		const e = this.focusedEntry;
-		const snippetLines = e ? wrapWords(singleLine(e.snippet), width, 2) : [];
+		// chrome = title + help + filter + separator + preview(title, detail) = 6.
+		const snippetBudget = this.targetHeight
+			? clamp(this.targetHeight - 6 - listRows.length, 4, this.maxSnippet)
+			: this.maxSnippet;
 		if (e) {
 			lines.push(th.fg("accent", th.bold(truncateToWidth(singleLine(e.title), width, "…"))));
 			lines.push(th.fg("muted", truncateToWidth(singleLine(e.detail), width, "…")));
+			// Preview snippet — wrapped to the budget (fills the height), highlighted.
+			const snippetLines = wrapWords(singleLine(e.snippet), width, snippetBudget);
+			for (let i = 0; i < snippetBudget; i++) {
+				const l = snippetLines[i] ?? "";
+				lines.push(highlight(truncateToWidth(l, width, "…"), e.terms, th));
+			}
 		} else {
 			lines.push(th.fg("warning", "  No matching sessions"));
 			lines.push("");
-		}
-		// Always exactly two snippet lines (highlighted) — keeps the frame stable.
-		for (let i = 0; i < 2; i++) {
-			const l = snippetLines[i] ?? "";
-			lines.push(e ? highlight(truncateToWidth(l, width, "…"), e.terms, th) : "");
 		}
 
 		return lines;

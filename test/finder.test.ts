@@ -119,17 +119,16 @@ describe("FinderComponent", () => {
 		expect(renderText(f)).toContain("payments"); // entries[1].title
 	});
 
-	it("render height is constant across navigation and filtering (no frame drift)", () => {
+	it("render height is stable across navigation (same match set)", () => {
+		// Height tracks content, so it's constant while the match set is fixed
+		// (navigation) but changes when filtering narrows results. The real
+		// invariant — no embedded newlines / control chars — is covered below.
 		const f = new FinderComponent({ title: "t", entries, theme, maxVisible: 8 });
 		const base = f.render(80).length;
 		expect(base).toBeGreaterThan(0);
 		f.handleInput("\x1b[B"); // ↓
 		expect(f.render(80).length).toBe(base);
 		f.handleInput("\x1b[A"); // ↑
-		expect(f.render(80).length).toBe(base);
-		type(f, "stripe"); // filter narrows the list below maxVisible
-		expect(f.render(80).length).toBe(base);
-		type(f, "xyz"); // filter matches nothing (empty list, shorter preview)
 		expect(f.render(80).length).toBe(base);
 	});
 
@@ -168,5 +167,21 @@ describe("FinderComponent", () => {
 		const base = rows.length;
 		f.handleInput("\x1b[B");
 		expect(f.render(80).length).toBe(base);
+	});
+
+	it("targetHeight fills the terminal: list + snippet budget == target (nav-stable)", () => {
+		const many = Array.from({ length: 50 }, (_, i) => ({
+			path: `/p${i}.jsonl`,
+			header: `sess ${i} · proj · ${i}m · ${i} msg`,
+			title: `session ${i}`,
+			detail: `/proj · 2025-01-01 · ${i} messages`,
+			snippet: "lorem ipsum ".repeat(200), // plenty to fill the snippet budget
+			terms: ["lorem"],
+		}));
+		const f = new FinderComponent({ title: "t", entries: many, theme, targetHeight: 30 });
+		const h = f.render(80).length;
+		expect(h).toBe(30); // chrome(6) + list + snippet budget == targetHeight
+		f.handleInput("\x1b[B"); // navigation must not drift height
+		expect(f.render(80).length).toBe(h);
 	});
 });
