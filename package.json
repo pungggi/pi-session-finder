@@ -14,6 +14,14 @@
     "navigation"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pungggi/pi-session-finder.git"
+  },
+  "homepage": "https://github.com/pungggi/pi-session-finder#readme",
+  "bugs": {
+    "url": "https://github.com/pungggi/pi-session-finder/issues"
+  },
   "type": "module",
   "main": "src/index.ts",
   "files": [
