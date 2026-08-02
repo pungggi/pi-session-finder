@@ -142,10 +142,11 @@ function writeBackState(state: BackState): void {
 	}
 }
 
-/** Diagnostics trace. TEMPORARILY unconditional while we diagnose /find-back
- *  (revert to the PI_FIND_BACK_DEBUG gate once resolved). Rotates past 256 KB
- *  so it can't grow unbounded. Never throws. */
+/** Opt-in diagnostics trace: set PI_FIND_BACK_DEBUG=1 to append one line per
+ *  event to `session-finder/debug.log`. Off by default. Rotates past 256 KB.
+ *  Never throws. */
 function debugLog(message: string): void {
+	if (!parseBoolEnv(process.env.PI_FIND_BACK_DEBUG, false)) return;
 	try {
 		const file = join(agentDataDir(), "session-finder", "debug.log");
 		mkdirSync(dirname(file), { recursive: true });
