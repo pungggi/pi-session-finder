@@ -307,3 +307,85 @@ describe("FinderComponent — rich facets", () => {
 		expect(calls).toBe(2); // not reloaded
 	});
 });
+
+// ── peek paging (item 5) ──────────────────────────────────────────
+
+describe("FinderComponent — peek paging", () => {
+	/** fullText: "stripe" anchor at 0, long filler, then tail markers. Long
+	 *  enough that one peek window (< 1007 chars) never shows it all. */
+	const fullText = "stripe " + "a".repeat(500) + "midmarker " + "b".repeat(480) + "tailmarker"; // len 1007
+	const peeks = [
+		{
+			path: "/p.jsonl",
+			header: "h",
+			title: "t",
+			detail: "d",
+			snippet: "the anchor snippet view here",
+			terms: ["stripe"],
+			fullText,
+		},
+		{
+			path: "/q.jsonl",
+			header: "h2",
+			title: "t2",
+			detail: "d2",
+			snippet: "other",
+			terms: ["stripe"], // no fullText → peek unavailable
+		},
+	];
+
+	it("starts at the anchor (no peek offset) showing the snippet", () => {
+		const f = new FinderComponent({ title: "t", entries: peeks, theme });
+		expect(f.getPeekOffset("/p.jsonl")).toBeUndefined();
+		expect(renderText(f)).toContain("the anchor snippet view here");
+	});
+
+	it("`>` enters peek mode and switches the view off the snippet", () => {
+		const f = new FinderComponent({ title: "t", entries: peeks, theme });
+		expect(renderText(f)).toContain("the anchor snippet view here");
+		f.handleInput(">");
+		expect(f.getPeekOffset("/p.jsonl")).not.toBeUndefined();
+		// now paging fullText, which does not contain the snippet string
+		expect(renderText(f)).not.toContain("the anchor snippet view here");
+	});
+
+	it("`<` from the anchor is a no-op (stays on the snippet)", () => {
+		const f = new FinderComponent({ title: "t", entries: peeks, theme });
+		f.handleInput("<");
+		expect(f.getPeekOffset("/p.jsonl")).toBeUndefined();
+	});
+
+	it("`<` after `>` pages back toward the anchor", () => {
+		const f = new FinderComponent({ title: "t", entries: peeks, theme });
+		f.handleInput(">");
+		const after = f.getPeekOffset("/p.jsonl")!;
+		expect(after).toBeGreaterThan(0);
+		f.handleInput("<");
+		expect(f.getPeekOffset("/p.jsonl")).toBeLessThanOrEqual(after);
+	});
+
+	it("focus change resets the peek offset to the anchor", () => {
+		const f = new FinderComponent({ title: "t", entries: peeks, theme });
+		f.handleInput(">");
+		expect(f.getPeekOffset("/p.jsonl")).not.toBeUndefined();
+		f.handleInput("\x1b[B"); // ↓ → /q
+		f.handleInput("\x1b[A"); // ↑ → back to /p
+		expect(f.getPeekOffset("/p.jsonl")).toBeUndefined(); // reset to anchor
+	});
+
+	it("`>`/`<` are no-ops when fullText is absent (entry /q)", () => {
+		const f = new FinderComponent({ title: "t", entries: peeks, theme });
+		f.handleInput("\x1b[B"); // ↓ → /q (no fullText)
+		f.handleInput(">");
+		expect(f.getPeekOffset("/q.jsonl")).toBeUndefined();
+	});
+
+	it("clamps at the tail bound (offset plateaus, can't overshoot)", () => {
+		const f = new FinderComponent({ title: "t", entries: peeks, theme });
+		renderText(f); // prime lastWidth
+		for (let i = 0; i < 8; i++) f.handleInput(">");
+		const plateau = f.getPeekOffset("/p.jsonl");
+		f.handleInput(">"); // already at the end
+		expect(f.getPeekOffset("/p.jsonl")).toBe(plateau);
+	});
+});

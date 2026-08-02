@@ -132,6 +132,23 @@ printable→filter branch. No-op at bounds.
 **Tests (`test/search.test.ts`):** `pageOffset` clamp / overlap / zero-len;
 focus-change reset verified via a component test hook.
 
+**Status (2026-08): ✅ shipped.** `FinderEntry.fullText` carries
+`allMessagesText` (already resident from `listAll` — no new memory cost).
+`peekOffset` is a per-path char-offset map, cleared on every focus change (so
+each row returns to its anchor). `pageOffset` + `peekAnchorIndex` are pure
+helpers in `search.ts` — the latter returns the same least-common-term anchor
+`extractSnippet` centers on, so the first `<`/`>` page starts AT the match, not
+the session start. Step = 0.8× the window for overlap; the window ≈
+`maxSnippet × terminal width`. `<`/`>` are stolen in `handleInput` before the
+printable→filter branch (so they can't also seed the filter). Default view is
+the term-anchored snippet; paging swaps in a raw `fullText` slice rendered
+through the same markdown pane. No-op when `fullText` is absent or fits one
+window, and at the bounds. Tests: +11 in `search.test.ts` (pageOffset
+clamp/overlap/zero-len/single-window; peekAnchorIndex rarest-term/no-match/
+empty/case) and +7 in `finder.test.ts` (anchor default, `>` enters + view
+switches, `<` no-op at anchor, `<` after `>`, focus-reset, absent-fullText
+no-op, tail-bound plateau).
+
 ---
 
 ## Item 6 — RRF as a technique, not infrastructure
@@ -185,7 +202,7 @@ gated on the PRD §10 benchmark.
 |---|---|---|---|---|
 | 6 | ✅ done | independent of UI; pure; lowest risk | `PI_FIND_RANK_MODE=rrf` env (opt-in; real config layer in item 1) | minor |
 | 1 | ✅ done | introduces the parser + pane layout that 5 builds on | `PI_FIND_RICH_PREVIEW=0` env (default `true`) | minor |
-| 5 | 3rd | reuses 1's pane + focus hook | — | patch |
+| 5 | ✅ done | reuses 1's pane + focus hook | `<`/`>` keys (always on) | patch |
 
 Each ships behind its own toggle and its own version bump — no big-bang.
 

@@ -40,6 +40,7 @@ import {
 	type SelectListTheme,
 } from "@earendil-works/pi-tui";
 import type { SessionDetail } from "./parse.js";
+import { pageOffset, peekAnchorIndex } from "./search.js";
 
 /** One result, carrying everything the list row and the preview pane need. */
 export interface FinderEntry {
@@ -53,6 +54,10 @@ export interface FinderEntry {
 	detail: string;
 	/** Preview line 3+ — longer, keyword-centered snippet. */
 	snippet: string;
+	/** Full session text (`allMessagesText`) for in-pane peek paging (item 5).
+	 *  Optional: when present, `<`/`>` page through it; when absent, only the
+	 *  term-anchored snippet is shown. */
+	fullText?: string;
 	/** Effective query terms, for highlighting in the snippet. */
 	terms: string[];
 }
@@ -126,6 +131,11 @@ export class FinderComponent implements Component {
 	private readonly markdownTheme: MarkdownTheme;
 	private md: Markdown | null = null;
 	private mdText = "";
+	/** Per-path char offset into fullText for peek paging (item 5). Absent ⇒
+	 *  show the term-anchored snippet; present ⇒ page through fullText. */
+	private readonly peekOffset = new Map<string, number>();
+	/** Last render width, so peek-page sizing can approximate the char budget. */
+	private lastWidth = 80;
 
 	onSelect?: (path: string) => void;
 	onCancel?: () => void;
@@ -185,6 +195,7 @@ export class FinderComponent implements Component {
 	/** Set the focused entry and trigger a lazy facet load for it. */
 	private setFocus(entry: FinderEntry | null): void {
 		this.focusedEntry = entry;
+		this.peekOffset.clear(); // peek resets to the anchor on every focus change
 		if (entry) this.maybeLoadDetail(entry.path);
 	}
 
@@ -204,6 +215,44 @@ export class FinderComponent implements Component {
 				this.pending.delete(path);
 				this.requestRender();
 			});
+	}
+
+	/** Text shown in the preview pane: a page of `fullText` when peeking, else
+	 *  the term-anchored snippet (item 5). */
+	private currentSnippetView(e: FinderEntry): string {
+		const ft = e.fullText;
+		if (!ft) return e.snippet;
+		const off = this.peekOffset.get(e.path);
+		if (off === undefined) return e.snippet; // anchor view
+		const window = this.peekWindowChars();
+		const start = Math.min(off, Math.max(0, ft.length - window));
+		const slice = ft.slice(start, start + window);
+		const pre = start > 0 ? "…" : "";
+		const post = start + window < ft.length ? "…" : "";
+		return pre + slice + post;
+	}
+
+	/** Char budget for one peek page ≈ snippet rows × terminal width. */
+	private peekWindowChars(): number {
+		return Math.max(160, this.maxSnippet * this.lastWidth);
+	}
+
+	/** Page the focused entry's fullText forward (1) / back (−1). No-op when the
+	 *  text is absent or fits a single window. First page starts at the match
+	 *  anchor; step is 0.8× the window so context overlaps at the seam. */
+	private pagePeek(dir: 1 | -1): void {
+		const e = this.focusedEntry;
+		if (!e || !e.fullText) return;
+		const len = e.fullText.length;
+		const window = this.peekWindowChars();
+		if (len <= window) return; // whole text fits — nothing to page
+		const inPeek = this.peekOffset.has(e.path);
+		const cur = inPeek ? (this.peekOffset.get(e.path) as number) : peekAnchorIndex(e.fullText, e.terms);
+		const step = Math.max(1, Math.floor(window * 0.8));
+		const next = pageOffset(cur, dir * step, len, window);
+		if (next === cur && !inPeek) return; // bound hit from anchor — stay on snippet
+		this.peekOffset.set(e.path, next);
+		this.requestRender();
 	}
 
 	/** Recompute the visible list from the current filter text (fuzzy). */
@@ -271,6 +320,8 @@ export class FinderComponent implements Component {
 			}
 		} else if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
 			// swallow — single filter field
+		} else if (this.focusedEntry != null && (data === ">" || data === "<")) {
+			this.pagePeek(data === ">" ? 1 : -1);
 		} else if (isPrintable(data)) {
 			this.filter.value += data;
 			this.refreshFilter();
@@ -280,10 +331,11 @@ export class FinderComponent implements Component {
 
 	render(width: number): string[] {
 		const th = this.theme;
+		this.lastWidth = width;
 		const lines: string[] = [];
 
 		lines.push(th.fg("accent", th.bold(this.title)));
-		lines.push(th.fg("dim", "type to filter  ·  ↑↓ navigate  ·  enter jump  ·  esc cancel"));
+		lines.push(th.fg("dim", "type to filter  ·  ↑↓ navigate  ·  < > peek  ·  enter jump  ·  esc cancel"));
 
 		// Filter line (plain text — no Input component / no cursor marker).
 		const placeholder = th.fg("dim", "type to filter…");
@@ -317,9 +369,10 @@ export class FinderComponent implements Component {
 			// collapsing into a wall of text. Cached per snippet text. Each output line
 			// is split on any stray newline / \r-stripped / width-capped, so no array
 			// entry ever carries an embedded newline (renderer-safe).
-			if (this.mdText !== e.snippet) {
-				this.md = new Markdown(e.snippet.trim(), 0, 0, this.markdownTheme);
-				this.mdText = e.snippet;
+			const snippetView = this.currentSnippetView(e);
+			if (this.mdText !== snippetView) {
+				this.md = new Markdown(snippetView.trim(), 0, 0, this.markdownTheme);
+				this.mdText = snippetView;
 			}
 			const mdLines = (this.md?.render(width) ?? [])
 				.flatMap((l) => l.split(/\r?\n/))
@@ -352,5 +405,11 @@ export class FinderComponent implements Component {
 	/** Test/debug hook: cached detail (undefined = not loaded, null = none). */
 	getCachedDetail(path: string): SessionDetail | null | undefined {
 		return this.detailCache.get(path);
+	}
+
+	/** Test/debug hook: current peek page offset for `path` (undefined = at the
+	 *  anchor, showing the term-centered snippet). */
+	getPeekOffset(path: string): number | undefined {
+		return this.peekOffset.get(path);
 	}
 }

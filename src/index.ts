@@ -100,7 +100,7 @@ function buildEntries(matches: RankedMatch[]): FinderEntry[] {
 		const header = `${title}  ·  ${project}  ·  ${ago(m.info.modified)}  ·  ${m.info.messageCount} msg`;
 		const detail = `${m.info.cwd || "(unknown project)"}  ·  modified ${day(m.info.modified)}  ·  ${m.info.messageCount} messages`;
 		const snippet = extractSnippet(m.info.allMessagesText, m.terms, previewCfg);
-		return { path: m.info.path, header, title, detail, snippet, terms: m.terms };
+		return { path: m.info.path, header, title, detail, snippet, terms: m.terms, fullText: m.info.allMessagesText };
 	});
 }
 

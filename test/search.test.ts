@@ -6,7 +6,9 @@ import {
 	extractSnippet,
 	fuseRanks,
 	matchSession,
+	pageOffset,
 	parseQuery,
+	peekAnchorIndex,
 	projName,
 	rankByCoverage,
 	rankByFrequency,
@@ -400,5 +402,49 @@ describe("ago", () => {
 	});
 	it("handles future dates", () => {
 		expect(ago(new Date(now + 1000), now)).toBe("in the future");
+	});
+});
+
+describe("pageOffset (item 5)", () => {
+	it("advances by delta within bounds", () => {
+		expect(pageOffset(100, 50, 1000, 200)).toBe(150);
+	});
+	it("clamps to 0 at the start", () => {
+		expect(pageOffset(50, -100, 1000, 200)).toBe(0);
+	});
+	it("clamps to len − window at the end (keeps a full window visible)", () => {
+		expect(pageOffset(900, 200, 1000, 200)).toBe(800); // not 1100
+	});
+	it("returns 0 when the text fits in one window (len ≤ window)", () => {
+		expect(pageOffset(0, 500, 150, 200)).toBe(0);
+		expect(pageOffset(0, 50, 200, 200)).toBe(0); // len === window → single page
+	});
+	it("handles zero-length text", () => {
+		expect(pageOffset(0, 100, 0, 200)).toBe(0);
+	});
+	it("negative delta never goes below 0", () => {
+		expect(pageOffset(0, -50, 1000, 200)).toBe(0);
+	});
+});
+
+describe("peekAnchorIndex (item 5)", () => {
+	it("returns the index of the rarest matched term", () => {
+		const text = "common common rare common";
+		expect(peekAnchorIndex(text, ["common", "rare"])).toBe(text.indexOf("rare"));
+	});
+	it("picks the least-common term when several match (local-IDF)", () => {
+		const text = "aa aa aa bb"; // aa×3, bb×1 → bb rarer
+		expect(peekAnchorIndex(text, ["aa", "bb"])).toBe(text.indexOf("bb"));
+	});
+	it("falls back to 0 when no term occurs in text", () => {
+		expect(peekAnchorIndex("hello world", ["zzz"])).toBe(0);
+	});
+	it("returns 0 for empty text or empty terms", () => {
+		expect(peekAnchorIndex("", ["x"])).toBe(0);
+		expect(peekAnchorIndex("x x", [])).toBe(0);
+	});
+	it("is case-insensitive by default", () => {
+		const text = "Find the Stripe thing";
+		expect(peekAnchorIndex(text, ["stripe"])).toBe(text.toLowerCase().indexOf("stripe"));
 	});
 });

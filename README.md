@@ -62,6 +62,10 @@ that points you at the (planned) `pi --find` CLI flag.
   shows the **models** used, a **tool histogram**, **files modified** (from
   edit/write calls), and **cost · tokens** consumed — above the keyword-centered
   snippet. Set `PI_FIND_RICH_PREVIEW=0` to keep the pane snippet-only.
+- **Peek:** once a row is focused, `<` / `>` page back/forward through the whole
+  session transcript in the preview pane (step ≈ 0.8 of the window so context
+  overlaps at the seam). The pane resets to the match anchor whenever you move
+  to another row.
 - **Experimental RRF:** set `PI_FIND_RANK_MODE=rrf` to fuse four independent
   signals (metadata, term coverage, recency, term frequency) via Reciprocal
   Rank Fusion instead of the hand-tuned order. Off by default — it becomes the
@@ -106,10 +110,11 @@ npm run typecheck
   shippable.
 - **Shipped beyond MVP:** custom TUI finder with live filter + a **rich preview
   pane** (models / tool histogram / files modified / cost — PLAN item 1),
-  **RRF rank-fusion** opt-in (item 6), and **recap-at-landing** + match locator
-  on jump (item 7). All in-memory, no DB/cache/index. See `PLAN.md`.
-- **v1:** peek `>`/`<` paging (PLAN item 5); richer settings once pi exposes a
-  config API.
+  `<`/`>` **peek paging** through the transcript (item 5), **RRF rank-fusion**
+  opt-in (item 6), and **recap-at-landing** + match locator on jump (item 7).
+  All in-memory, no DB/cache/index. See `PLAN.md`.
+- **v1:** richer settings once pi exposes a config API; RRF default flip (gated
+  on the gold-set benchmark, PRD §10).
 - **v1.1:** `pi --find` CLI flag; `matchMode` (or/phrase) + `rankMode: "bm25"`.
 - **v2:** streaming results, fuzzy matching, optional content index.
 

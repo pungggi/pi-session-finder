@@ -403,6 +403,45 @@ export function extractSnippet(
 }
 
 /**
+ * Clamp a char offset for in-pane peek paging (PLAN item 5). The window must
+ * always show `window` chars, so the latest valid start is `len − window`; this
+ * clamps `cur + delta` into [0, max(0, len − window)]. When the text is shorter
+ * than (or exactly) one window the only valid start is 0. Pure / unit-testable.
+ */
+export function pageOffset(cur: number, delta: number, len: number, window: number): number {
+	const maxStart = Math.max(0, len - window);
+	return Math.max(0, Math.min(maxStart, cur + delta));
+}
+
+/**
+ * Char index in `text` of the least-common matched term — the same anchor
+ * {@link extractSnippet} centers on, returned as a raw offset so peek paging
+ * starts AT the match (not the session start). Picks the rarest occurring term
+ * (local-IDF surrogate, PRD §8.4 D3); returns 0 when no term occurs or the text
+ * is empty. Pure / unit-testable.
+ */
+export function peekAnchorIndex(
+	text: string,
+	terms: readonly string[],
+	config: SearchConfig = DEFAULT_CONFIG,
+): number {
+	if (!text || terms.length === 0) return 0;
+	const textL = cmp(text, config.caseSensitive);
+	let bestIdx = -1;
+	let bestCount = Infinity;
+	for (const original of terms) {
+		const t = cmp(original, config.caseSensitive);
+		if (!t) continue;
+		const c = countOccurrences(textL, t);
+		if (c > 0 && c < bestCount) {
+			bestCount = c;
+			bestIdx = textL.indexOf(t);
+		}
+	}
+	return bestIdx === -1 ? 0 : bestIdx;
+}
+
+/**
  * Compact project label for a cwd: the last two path segments
  * (`parent/basename`) when available, else the basename. Falls back gracefully
  * for empty/old-session cwds.
