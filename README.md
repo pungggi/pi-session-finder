@@ -98,6 +98,7 @@ Env-var knobs (pi extensions don't expose a config API yet):
 |---|---|---|
 | `PI_FIND_RICH_PREVIEW` | `1` | `0` disables the models/tools/files/cost facet pane (snippet-only). |
 | `PI_FIND_RANK_MODE` | `heuristic` | `rrf` fuses four signals via Reciprocal Rank Fusion; `bm25` is reserved. |
+| `PI_FIND_BACK_DEBUG` | `0` | `1` appends a line per `session_start` / `/find-back` to `session-finder/debug.log`. |
 
 ## Project layout
 

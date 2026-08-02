@@ -40,6 +40,13 @@ describe("applySessionStart — recording switches", () => {
 		const s0: BackState = { stack: ["a"], suppressNext: false };
 		const s = applySessionStart(s0, "a");
 		expect(s.stack).toEqual(["a"]); // unchanged
+		expect(s).toBe(s0); // same reference — lets the handler skip a pointless write
+	});
+
+	it("returns the same reference on a no-op (startup/reload) so callers skip writes", () => {
+		const s0: BackState = { stack: ["a"], suppressNext: false };
+		expect(applySessionStart(s0, undefined)).toBe(s0);
+		expect(applySessionStart(s0, null)).toBe(s0);
 	});
 
 	it("caps the stack at MAX_BACK_DEPTH, dropping the oldest", () => {

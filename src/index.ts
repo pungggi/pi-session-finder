@@ -19,7 +19,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { FinderComponent, clamp, type FinderEntry } from "./finder.js";
@@ -130,11 +130,28 @@ function writeBackState(state: BackState): void {
 	const file = backStatePath();
 	try {
 		mkdirSync(dirname(file), { recursive: true });
-		const tmp = `${file}.tmp`;
-		writeFileSync(tmp, JSON.stringify(state), "utf8");
-		renameSync(tmp, file); // atomic-ish: no half-written file across reloads
+		// Direct truncate+write — NOT temp-file + rename. On Windows, rename-over-an-
+		// existing-file can raise EPERM when the destination is briefly locked (AV
+		// scan, indexer, …); the catch below would swallow it and silently drop the
+		// just-recorded jump, leaving /find-back with an empty stack. A direct
+		// overwrite is far more reliable here, and atomicity is irrelevant: single
+		// writer, ~30-byte file, no concurrent readers.
+		writeFileSync(file, JSON.stringify(state), "utf8");
 	} catch {
 		/* best-effort: back nav degrades if persist fails */
+	}
+}
+
+/** Optional diagnostics: set PI_FIND_BACK_DEBUG=1 to append one line per event
+ *  to `session-finder/debug.log`. Off by default. Never throws. */
+function debugLog(message: string): void {
+	if (!parseBoolEnv(process.env.PI_FIND_BACK_DEBUG, false)) return;
+	try {
+		const file = join(agentDataDir(), "session-finder", "debug.log");
+		mkdirSync(dirname(file), { recursive: true });
+		appendFileSync(file, `${new Date().toISOString()} ${message}\n`, "utf8");
+	} catch {
+		/* diagnostics must never break a session */
 	}
 }
 
@@ -190,7 +207,13 @@ export default function (pi: ExtensionAPI) {
 				? event.previousSessionFile
 				: undefined;
 		try {
-			writeBackState(applySessionStart(readBackState(), previous));
+			// applySessionStart returns the SAME reference when nothing changed
+			// (startup/reload/dedup), so we only touch disk on a real state change —
+			// less churn, fewer chances to hit a transient fs error.
+			const before = readBackState();
+			const next = applySessionStart(before, previous);
+			if (next !== before) writeBackState(next);
+			debugLog(`session_start reason=${event.reason} previous=${previous ?? "(none)"} stackLen=${next.stack.length} suppress=${next.suppressNext}`);
 		} catch {
 			/* never break a session start over back-stack bookkeeping */
 		}
@@ -354,6 +377,7 @@ export default function (pi: ExtensionAPI) {
 			const before = readBackState();
 			const state0 = dropMissingTop(before, (p) => existsSync(p));
 			const popped = popForBack(state0);
+			debugLog(`find-back start stackLen=${before.stack.length} popped=${popped ? popped.target : "(none)"}`);
 			if (!popped) {
 				if (state0 !== before) writeBackState(state0); // persist stale cleanup only if it changed
 				ctx.ui.notify("No session to go back to", "info");
