@@ -4,10 +4,16 @@ import {
 	ago,
 	countOccurrences,
 	extractSnippet,
+	fuseRanks,
 	matchSession,
 	parseQuery,
 	projName,
+	rankByCoverage,
+	rankByFrequency,
+	rankByMeta,
+	rankByRecency,
 	rankMatches,
+	type RankedMatch,
 	type SessionInfoLike,
 } from "../src/search.js";
 
@@ -24,6 +30,23 @@ function mk(over: Partial<SessionInfoLike> = {}): SessionInfoLike {
 		messageCount: over.messageCount ?? 5,
 		firstMessage: over.firstMessage ?? "hello",
 		allMessagesText: over.allMessagesText ?? "hello world",
+	};
+}
+
+/** Build a RankedMatch fixture: unique `path`, optional modified/matchedTerms/nameMatched/text. */
+function rm(
+	path: string,
+	opts: { modified?: Date; matchedTerms?: string[]; nameMatched?: boolean; text?: string } = {},
+): RankedMatch {
+	return {
+		info: mk({
+			path,
+			modified: opts.modified ?? new Date("2025-01-01T00:00:00Z"),
+			allMessagesText: opts.text ?? "hello world",
+		}),
+		terms: opts.matchedTerms ?? ["x"],
+		matchedTerms: opts.matchedTerms ?? ["x"],
+		nameMatched: opts.nameMatched ?? false,
 	};
 }
 
@@ -156,6 +179,139 @@ describe("rankMatches", () => {
 	it("does not match sessions lacking all terms (AND default)", () => {
 		const out = rankMatches([mk({ allMessagesText: "only stripe" })], "stripe webhook");
 		expect(out).toEqual([]);
+	});
+});
+
+// ── RRF — fuseRanks & rankers (PLAN item 6) ──────────────────────────
+
+describe("fuseRanks", () => {
+	const T0 = new Date("2025-01-01T00:00:00Z");
+	const T1 = new Date("2025-01-02T00:00:00Z");
+	const T2 = new Date("2025-01-03T00:00:00Z");
+
+	it("returns a single list unchanged", () => {
+		const A = rm("A"), B = rm("B"), C = rm("C");
+		expect(fuseRanks([[A, B, C]]).map((m) => m.info.path)).toEqual(["A", "B", "C"]);
+	});
+
+	it("agreement boosts ranking — rank-1 in both lists wins", () => {
+		const X = rm("X"), Y = rm("Y"), Z = rm("Z");
+		const out = fuseRanks([
+			[X, Y, Z],
+			[X, Z, Y],
+		]);
+		expect(out[0].info.path).toBe("X");
+	});
+
+	it("fuses order — equal symmetric ranks tie-break by recency", () => {
+		// A: rank1+rank2; B: rank2+rank1 → identical RRF score → newer wins.
+		const A = rm("A", { modified: T2 }), B = rm("B", { modified: T1 }), C = rm("C", { modified: T0 });
+		const out = fuseRanks([
+			[A, B, C],
+			[B, A, C],
+		]);
+		expect(out.map((m) => m.info.path)).toEqual(["A", "B", "C"]);
+	});
+
+	it("ties break by recency (newer first)", () => {
+		const older = rm("older", { modified: T0 }), newer = rm("newer", { modified: T2 });
+		const out = fuseRanks([
+			[older, newer],
+			[newer, older],
+		]);
+		expect(out.map((m) => m.info.path)).toEqual(["newer", "older"]);
+	});
+
+	it("ties break by path asc when recency is identical", () => {
+		const a = rm("zzz"), b = rm("aaa");
+		const out = fuseRanks([
+			[a, b],
+			[b, a],
+		]);
+		expect(out.map((m) => m.info.path)).toEqual(["aaa", "zzz"]);
+	});
+
+	it("a match absent from a list contributes nothing (defensive)", () => {
+		// A only in L1, B only in L2 → equal score → recency equal → path asc.
+		const A = rm("A"), B = rm("B");
+		expect(fuseRanks([[A], [B]]).map((m) => m.info.path)).toEqual(["A", "B"]);
+	});
+
+	it("k sensitivity — the strong-agreement winner is stable across k", () => {
+		const A = rm("A"), B = rm("B"), C = rm("C");
+		const lists = [
+			[A, B, C],
+			[A, C, B],
+		];
+		expect(fuseRanks(lists, 1)[0].info.path).toBe("A");
+		expect(fuseRanks(lists, 60)[0].info.path).toBe("A");
+		expect(fuseRanks(lists, 1000)[0].info.path).toBe("A");
+	});
+
+	it("non-positive k falls back to the default (60)", () => {
+		const A = rm("A");
+		expect(() => fuseRanks([[A]], 0)).not.toThrow();
+		expect(() => fuseRanks([[A]], -5)).not.toThrow();
+	});
+});
+
+describe("RRF rankers", () => {
+	const T0 = new Date("2025-01-01T00:00:00Z");
+	const T2 = new Date("2025-01-03T00:00:00Z");
+
+	it("rankByRecency sorts modified desc", () => {
+		const out = rankByRecency([rm("old", { modified: T0 }), rm("new", { modified: T2 })]);
+		expect(out.map((m) => m.info.path)).toEqual(["new", "old"]);
+	});
+
+	it("rankByCoverage sorts distinct matched-terms desc", () => {
+		const out = rankByCoverage([
+			rm("a", { matchedTerms: ["stripe"] }),
+			rm("b", { matchedTerms: ["stripe", "webhook"] }),
+		]);
+		expect(out.map((m) => m.info.path)).toEqual(["b", "a"]);
+	});
+
+	it("rankByMeta puts name/cwd matches above text-only", () => {
+		const out = rankByMeta(
+			[rm("a", { matchedTerms: ["stripe"] }), rm("b", { matchedTerms: ["stripe"], nameMatched: true })],
+			DEFAULT_CONFIG,
+		);
+		expect(out.map((m) => m.info.path)).toEqual(["b", "a"]);
+	});
+
+	it("rankByFrequency sums query-term occurrences desc", () => {
+		const out = rankByFrequency(
+			[
+				rm("a", { matchedTerms: ["stripe"], text: "stripe once" }),
+				rm("b", { matchedTerms: ["stripe"], text: "stripe stripe stripe stripe" }),
+			],
+			DEFAULT_CONFIG,
+		);
+		expect(out.map((m) => m.info.path)).toEqual(["b", "a"]);
+	});
+});
+
+describe("rankMatches — rankMode dispatch", () => {
+	it("rrf mode fuses signals and returns the full matched set", () => {
+		const sessions = [
+			mk({ path: "/a", name: "stripe", allMessagesText: "stripe stripe", modified: new Date("2025-01-03T00:00:00Z") }),
+			mk({ path: "/b", allMessagesText: "stripe webhook stripe webhook stripe", modified: new Date("2025-01-01T00:00:00Z") }),
+		];
+		const cfg = { ...DEFAULT_CONFIG, rankMode: "rrf" as const };
+		const out = rankMatches(sessions, "stripe", cfg);
+		expect(out).toHaveLength(2);
+		expect(out.map((m) => m.info.path).sort()).toEqual(["/a", "/b"]);
+	});
+
+	it("bm25 mode is reserved and behaves identically to heuristic", () => {
+		const sessions = [
+			mk({ path: "/a", allMessagesText: "stripe", modified: new Date("2025-01-01T00:00:00Z") }),
+			mk({ path: "/b", name: "stripe", allMessagesText: "no kw here", modified: new Date("2025-01-01T00:00:00Z") }),
+		];
+		const heur = rankMatches(sessions, "stripe", { ...DEFAULT_CONFIG, rankMode: "heuristic" });
+		const bm = rankMatches(sessions, "stripe", { ...DEFAULT_CONFIG, rankMode: "bm25" });
+		expect(bm.map((m) => m.info.path)).toEqual(heur.map((m) => m.info.path));
 	});
 });
 

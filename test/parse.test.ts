@@ -227,7 +227,7 @@ describe("parseSessionDetailText — locator", () => {
 	it("honors case sensitivity", () => {
 		const raw = jl(header(), userMsg("m1", "Find the Stripe integration"));
 		const ci = parseSessionDetailText(raw, ["stripe"])!;
-		const cs = parseSessionDetailText(raw, ["stripe"], { caseSensitive: true, matchMode: "and", snippetChars: 160 })!;
+		const cs = parseSessionDetailText(raw, ["stripe"], { caseSensitive: true, matchMode: "and", snippetChars: 160, rankMode: "heuristic" })!;
 		expect(ci.locator).not.toBeNull(); // case-insensitive matches "Stripe"
 		expect(cs.locator).toBeNull(); // case-sensitive: "stripe" ≠ "Stripe"
 	});

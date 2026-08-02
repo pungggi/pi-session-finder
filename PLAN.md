@@ -153,6 +153,13 @@ PRD §10 (see locked decisions). Reconciles with PRD's reserved `"bm25"` —
 expected order; agreement-boosts-agreement (two rankers both ranking X first →
 X wins); tiebreak determinism; `k` sensitivity smoke test.
 
+**Status (2026-08): ✅ shipped** as `search.ts` `fuseRanks` + `rankByMeta` /
+`rankByCoverage` / `rankByRecency` / `rankByFrequency`, dispatched from
+`rankMatches(config.rankMode)`; 14 tests. Opt-in is the `PI_FIND_RANK_MODE`
+env var (`rrf` / `bm25` / `heuristic`) resolved in `index.ts` — a lightweight
+knob until item 1 introduces a real config layer. The default flip is still
+gated on the PRD §10 benchmark.
+
 **Risk:** lowest of the three (pure, opt-in, fully unit-testable).
 
 ---
@@ -161,7 +168,7 @@ X wins); tiebreak determinism; `k` sensitivity smoke test.
 
 | # | Order | Why | Setting | Version |
 |---|---|---|---|---|
-| 6 | **1st (or parallel)** | independent of UI; pure; lowest risk | `rankMode:"rrf"` (opt-in) | minor |
+| 6 | ✅ done | independent of UI; pure; lowest risk | `PI_FIND_RANK_MODE=rrf` env (opt-in; real config layer in item 1) | minor |
 | 1 | 2nd | introduces the parser + pane layout that 5 builds on | `richPreview` (default `true`) | minor |
 | 5 | 3rd | reuses 1's pane + focus hook | — | patch |
 

@@ -10,6 +10,8 @@
  *   - matchSession / rankMatches: case-insensitive AND/OR/phrase matching over
  *     `name` + `cwd` + `allMessagesText`; rank by name-hit, then term count,
  *     then recency.
+ *   - rankMatches can fuse independent signals via Reciprocal Rank Fusion
+ *     (PLAN item 6): `rankMode: "rrf"` (opt-in; default stays "heuristic").
  *   - extractSnippet: center a ±N char window on the least-common matched term
  *     (a local IDF proxy), trimmed to token boundaries, whitespace-collapsed.
  *   - projName / ago: display helpers.
@@ -33,6 +35,14 @@ export interface SessionInfoLike {
 
 export type MatchMode = "and" | "or" | "phrase";
 
+/**
+ * Ranking strategy for {@link rankMatches}.
+ * - `"heuristic"` — hand-tuned lexicographic order (default).
+ * - `"rrf"` — Reciprocal Rank Fusion of independent signals (PLAN item 6).
+ * - `"bm25"` — reserved (PRD §10), not yet implemented → behaves as heuristic.
+ */
+export type RankMode = "heuristic" | "rrf" | "bm25";
+
 export interface SearchConfig {
 	/** Match case-sensitively. Default false. */
 	caseSensitive: boolean;
@@ -40,12 +50,15 @@ export interface SearchConfig {
 	matchMode: MatchMode;
 	/** Context-window size (chars) for {@link extractSnippet}. Default 160. */
 	snippetChars: number;
+	/** Ranking strategy. Default "heuristic" (PLAN item 6). */
+	rankMode: RankMode;
 }
 
 export const DEFAULT_CONFIG: SearchConfig = {
 	caseSensitive: false,
 	matchMode: "and",
 	snippetChars: 160,
+	rankMode: "heuristic",
 };
 
 /** A parsed search query. */
@@ -179,8 +192,8 @@ export function matchSession(
 /**
  * Filter + rank all sessions for a query. (PRD §FR-2.)
  *
- * Ranking: (a) name match first, (b) distinct matched terms desc, (c) modified
- * desc. A hand-tuned IDF analogue — rare terms discriminate better.
+ * Ranking dispatches on {@link SearchConfig.rankMode}; see {@link rank} for the
+ * per-mode order.
  */
 export function rankMatches(
 	sessions: readonly SessionInfoLike[],
@@ -196,14 +209,122 @@ export function rankMatches(
 		if (m) matches.push(m);
 	}
 
+	return rank(matches, config);
+}
+
+/**
+ * Rank an already-filtered set per {@link SearchConfig.rankMode}.
+ *
+ * - `"heuristic"` (default) — hand-tuned lexicographic: name match, then
+ *   distinct matched terms, then recency. Fast, interpretable, tuned to the
+ *   gold set (PRD §10).
+ * - `"rrf"` — Reciprocal Rank Fusion of four independent signals
+ *   ({@link rankByMeta}, {@link rankByCoverage}, {@link rankByRecency},
+ *   {@link rankByFrequency}) via {@link fuseRanks}. Opt-in; flip the default
+ *   only after a benchmark shows it ≥ heuristic (PLAN item 6).
+ * - `"bm25"` — reserved (PRD §10), not yet implemented → behaves as heuristic.
+ */
+function rank(matches: RankedMatch[], config: SearchConfig): RankedMatch[] {
+	if (config.rankMode === "rrf") {
+		return fuseRanks([
+			rankByMeta(matches, config),
+			rankByCoverage(matches),
+			rankByRecency(matches),
+			rankByFrequency(matches, config),
+		]);
+	}
+	// "heuristic" and the reserved "bm25" (PRD §10) both use the hand-tuned order.
 	matches.sort((a, b) => {
 		if (a.nameMatched !== b.nameMatched) return a.nameMatched ? -1 : 1;
 		const byTerms = b.matchedTerms.length - a.matchedTerms.length;
 		if (byTerms !== 0) return byTerms;
-		return b.info.modified.getTime() - a.info.modified.getTime();
+		return finalTiebreak(a, b);
 	});
-
 	return matches;
+}
+
+/** Deterministic total order for ties: most-recent first, then path asc. */
+function finalTiebreak(a: RankedMatch, b: RankedMatch): number {
+	const t = b.info.modified.getTime() - a.info.modified.getTime();
+	return t !== 0 ? t : a.info.path < b.info.path ? -1 : a.info.path > b.info.path ? 1 : 0;
+}
+
+// ── RRF rankers — pure, independent signals over the matched set ─────
+// Each returns a fresh ranked copy (input untouched). Used both standalone and
+// as the input lists to {@link fuseRanks} (PLAN item 6).
+
+/** Ranker 1: metadata (name or cwd) matches above text-only matches. */
+export function rankByMeta(matches: readonly RankedMatch[], config: SearchConfig): RankedMatch[] {
+	const cs = config.caseSensitive;
+	return [...matches].sort((a, b) => {
+		const ma = hasMetaHit(a, cs);
+		const mb = hasMetaHit(b, cs);
+		if (ma !== mb) return ma ? -1 : 1;
+		return finalTiebreak(a, b);
+	});
+}
+
+/** Does any matched term hit the session name or cwd (not just the body)? */
+function hasMetaHit(m: RankedMatch, caseSensitive: boolean): boolean {
+	if (m.nameMatched) return true;
+	const cwd = cmp(m.info.cwd, caseSensitive);
+	return m.matchedTerms.some((t) => cwd.includes(cmp(t, caseSensitive)));
+}
+
+/** Ranker 2: distinct matched-term coverage desc (today's primary signal). */
+export function rankByCoverage(matches: readonly RankedMatch[]): RankedMatch[] {
+	return [...matches].sort((a, b) => {
+		const c = b.matchedTerms.length - a.matchedTerms.length;
+		return c !== 0 ? c : finalTiebreak(a, b);
+	});
+}
+
+/** Ranker 3: recency — `modified` desc. */
+export function rankByRecency(matches: readonly RankedMatch[]): RankedMatch[] {
+	return [...matches].sort((a, b) => finalTiebreak(a, b));
+}
+
+/**
+ * Ranker 4: total query-term frequency in `allMessagesText` desc — a cheap
+ * BM25-ish signal without length normalization.
+ */
+export function rankByFrequency(matches: readonly RankedMatch[], config: SearchConfig): RankedMatch[] {
+	const cs = config.caseSensitive;
+	const freqOf = (m: RankedMatch): number => {
+		const text = cmp(m.info.allMessagesText, cs);
+		return m.matchedTerms.reduce((sum, t) => sum + countOccurrences(text, cmp(t, cs)), 0);
+	};
+	return [...matches].sort((a, b) => {
+		const f = freqOf(b) - freqOf(a);
+		return f !== 0 ? f : finalTiebreak(a, b);
+	});
+}
+
+/**
+ * Reciprocal Rank Fusion: combine independent ranked lists into one.
+ *
+ * `score(m) = Σ_i 1/(k + rank_i)`, where `rank_i` is `m`'s 1-based position in
+ * ranker `i`; a match absent from a list contributes nothing (defensive — in
+ * normal use every ranker covers the same matched set). Higher score first;
+ * ties broken by {@link finalTiebreak} (recency, then path) for determinism.
+ * `k=60` is the literature default (Cormack et al. 2009).
+ */
+export function fuseRanks(lists: RankedMatch[][], k = 60): RankedMatch[] {
+	const kk = k > 0 ? k : 60;
+	const score = new Map<string, number>();
+	const byPath = new Map<string, RankedMatch>();
+	for (const list of lists) {
+		for (let i = 0; i < list.length; i++) {
+			const m = list[i];
+			const key = m.info.path;
+			if (!byPath.has(key)) byPath.set(key, m);
+			score.set(key, (score.get(key) ?? 0) + 1 / (kk + i + 1));
+		}
+	}
+	return [...byPath.values()].sort((a, b) => {
+		const s = (score.get(b.info.path) ?? 0) - (score.get(a.info.path) ?? 0);
+		return s !== 0 ? s : finalTiebreak(a, b);
+	});
 }
 
 /** Collapse runs of whitespace (incl. newlines) to single spaces. */

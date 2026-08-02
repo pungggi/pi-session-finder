@@ -296,6 +296,7 @@ function buildLocator(
 		caseSensitive,
 		matchMode: "and",
 		snippetChars: LOCATOR_WINDOW,
+		rankMode: "heuristic",
 	});
 	return { entryId: m.id, index: idx + 1, total: messages.length, text };
 }

@@ -28,6 +28,7 @@ import {
 	projName,
 	rankMatches,
 	type RankedMatch,
+	type SearchConfig,
 	type SessionInfoLike,
 } from "./search.js";
 
@@ -39,6 +40,19 @@ const PREVIEW_SNIPPET_CHARS = 4000;
 /** ISO yyyy-mm-dd for display. */
 function day(d: Date): string {
 	return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Resolve the runtime search config. Rank mode is an experimental opt-in via
+ * the `PI_FIND_RANK_MODE` env var (`heuristic` | `rrf` | `bm25`); default stays
+ * `heuristic` until RRF is benchmarked vs. the gold set (PLAN item 6 / PRD §10).
+ * Migrate to a real config layer when item 1 lands one.
+ */
+function resolveSearchConfig(): SearchConfig {
+	const mode = (process.env.PI_FIND_RANK_MODE ?? "").trim().toLowerCase();
+	return mode === "rrf" || mode === "bm25" || mode === "heuristic"
+		? { ...DEFAULT_CONFIG, rankMode: mode }
+		: DEFAULT_CONFIG;
 }
 
 /** Build finder rows (header + preview fields) shared by the TUI and RPC pickers. */
@@ -114,7 +128,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			ctx.ui.setStatus("find", undefined);
 
-			const matches = rankMatches(sessions, query, DEFAULT_CONFIG);
+			const matches = rankMatches(sessions, query, resolveSearchConfig());
 			if (matches.length === 0) {
 				ctx.ui.notify(`No sessions matched "${query}"`, "info");
 				return;

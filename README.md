@@ -58,6 +58,11 @@ that points you at the (planned) `pi --find` CLI flag.
   surrogate — rare terms disambiguate better), trimmed to token boundaries,
   whitespace-collapsed.
 - **Ranking:** name hit first → more matched terms → more recent.
+- **Experimental RRF:** set `PI_FIND_RANK_MODE=rrf` to fuse four independent
+  signals (metadata, term coverage, recency, term frequency) via Reciprocal
+  Rank Fusion instead of the hand-tuned order. Off by default — it becomes the
+  default only if it beats the heuristic on the gold set. (`bm25` is reserved
+  and currently behaves like the default.)
 
 ## Project layout
 
