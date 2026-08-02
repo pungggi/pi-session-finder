@@ -19,7 +19,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { FinderComponent, clamp, type FinderEntry } from "./finder.js";
@@ -142,14 +142,22 @@ function writeBackState(state: BackState): void {
 	}
 }
 
-/** Optional diagnostics: set PI_FIND_BACK_DEBUG=1 to append one line per event
- *  to `session-finder/debug.log`. Off by default. Never throws. */
+/** Diagnostics trace. TEMPORARILY unconditional while we diagnose /find-back
+ *  (revert to the PI_FIND_BACK_DEBUG gate once resolved). Rotates past 256 KB
+ *  so it can't grow unbounded. Never throws. */
 function debugLog(message: string): void {
-	if (!parseBoolEnv(process.env.PI_FIND_BACK_DEBUG, false)) return;
 	try {
 		const file = join(agentDataDir(), "session-finder", "debug.log");
 		mkdirSync(dirname(file), { recursive: true });
-		appendFileSync(file, `${new Date().toISOString()} ${message}\n`, "utf8");
+		const line = `${new Date().toISOString()} ${message}\n`;
+		let big = false;
+		try {
+			big = statSync(file).size > 256 * 1024;
+		} catch {
+			/* absent */
+		}
+		if (big) writeFileSync(file, line, "utf8");
+		else appendFileSync(file, line, "utf8");
 	} catch {
 		/* diagnostics must never break a session */
 	}
@@ -419,4 +427,6 @@ export default function (pi: ExtensionAPI) {
 			}
 		},
 	});
+
+	debugLog("factory: commands registered (find, find-back)");
 }
