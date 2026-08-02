@@ -19,7 +19,17 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { FinderComponent, clamp, type FinderEntry } from "./finder.js";
+import {
+	applySessionStart,
+	dropMissingTop,
+	emptyState,
+	popForBack,
+	type BackState,
+} from "./history.js";
 import { parseSessionDetail, type Outcome, type SessionDetail } from "./parse.js";
 import {
 	DEFAULT_CONFIG,
@@ -88,6 +98,46 @@ function loadDetailDeferred(path: string): Promise<SessionDetail | null> {
 	);
 }
 
+/**
+ * Back-navigation persistence (see history.ts). Lives under the pi agent dir
+ * so it survives the cross-cwd module reload that `/find` jumps trigger.
+ * `PI_CODING_AGENT_DIR` overrides the default `~/.pi/agent`.
+ */
+function agentDataDir(): string {
+	return process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
+}
+
+function backStatePath(): string {
+	return join(agentDataDir(), "session-finder", "backstack.json");
+}
+
+function readBackState(): BackState {
+	try {
+		const parsed = JSON.parse(readFileSync(backStatePath(), "utf8")) as Partial<BackState>;
+		if (Array.isArray(parsed.stack)) {
+			return {
+				stack: parsed.stack.filter((s): s is string => typeof s === "string"),
+				suppressNext: Boolean(parsed.suppressNext),
+			};
+		}
+	} catch {
+		/* missing / corrupt → start fresh */
+	}
+	return emptyState();
+}
+
+function writeBackState(state: BackState): void {
+	const file = backStatePath();
+	try {
+		mkdirSync(dirname(file), { recursive: true });
+		const tmp = `${file}.tmp`;
+		writeFileSync(tmp, JSON.stringify(state), "utf8");
+		renameSync(tmp, file); // atomic-ish: no half-written file across reloads
+	} catch {
+		/* best-effort: back nav degrades if persist fails */
+	}
+}
+
 /** Build finder rows (header + preview fields) shared by the TUI and RPC pickers. */
 function buildEntries(matches: RankedMatch[]): FinderEntry[] {
 	const previewCfg = { ...DEFAULT_CONFIG, snippetChars: PREVIEW_SNIPPET_CHARS };
@@ -131,6 +181,21 @@ function outcomeLabel(o: Outcome): string {
 }
 
 export default function (pi: ExtensionAPI) {
+	// Universal "back" navigation: record every real session switch (new / resume /
+	// fork) so `/find-back` can replay it. Bookkeeping only — never notify, never
+	// throw. See history.ts for why this state lives on disk, not in memory.
+	pi.on("session_start", async (event) => {
+		const previous =
+			event.reason === "new" || event.reason === "resume" || event.reason === "fork"
+				? event.previousSessionFile
+				: undefined;
+		try {
+			writeBackState(applySessionStart(readBackState(), previous));
+		} catch {
+			/* never break a session start over back-stack bookkeeping */
+		}
+	});
+
 	pi.registerCommand("find", {
 		description: "Search all sessions (all projects) by keyword and jump to a match",
 		handler: async (args, ctx) => {
@@ -268,6 +333,48 @@ export default function (pi: ExtensionAPI) {
 			// Only reached with a live old ctx when the switch was vetoed — safe to use.
 			if (result.cancelled) {
 				ctx.ui.notify("Switch cancelled", "info");
+			}
+		},
+	});
+
+	// `/find-back`: jump to the previous session/project. Universal — undoes not
+	// just `/find` but any `/resume`, `/new`, `/fork`, or `/clone` (anything that
+	// fired `session_start` with a `previousSessionFile`). See history.ts.
+	pi.registerCommand("find-back", {
+		description:
+			"Jump back to the previous session/project (undo /find, /resume, /new, /fork, …)",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("/find-back needs interactive mode", "info");
+				return;
+			}
+
+			// Drop deleted sessions from the top, then pop the most recent survivor.
+			// `before` (same ref as state0 unless stale cleanup happened) gates a write.
+			const before = readBackState();
+			const state0 = dropMissingTop(before, (p) => existsSync(p));
+			const popped = popForBack(state0);
+			if (!popped) {
+				if (state0 !== before) writeBackState(state0); // persist stale cleanup only if it changed
+				ctx.ui.notify("No session to go back to", "info");
+				return;
+			}
+
+			// Commit the pop and arm the suppress flag before switching: the switch
+			// we're about to make must not be recorded again (ping-pong guard).
+			writeBackState(popped.state);
+
+			const result = await ctx.switchSession(popped.target, {
+				withSession: async (rcx) => {
+					rcx.ui.notify("Back to previous session", "info");
+				},
+			});
+
+			// Vetoed: we never actually left — restore the popped entry and clear the
+			// suppress flag so the next real switch records normally.
+			if (result?.cancelled) {
+				writeBackState({ stack: [...popped.state.stack, popped.target], suppressNext: false });
+				ctx.ui.notify("Back cancelled", "info");
 			}
 		},
 	});

@@ -34,6 +34,7 @@ pi -e ./src/index.ts
 /find "stripe webhook"      # quoted phrase → matched as a single substring
 /find BusinessCentral       # matches by project path too
 /find                       # opens a search prompt (type to search)
+/find-back                  # jump back to the previous session/project
 ```
 
 Pick a result with the arrow keys + `Enter` to switch into that session **and**
@@ -42,6 +43,23 @@ its working directory (pi re-runs project trust for the target `cwd`, just like
 
 Each result shows the session name (or first message), the project folder, how
 long ago it was modified, the message count, and a snippet of the matching text.
+
+### Going back: `/find-back`
+
+Every time you switch sessions — via `/find`, `/resume`, `/new`, `/fork`, or
+`/clone` — pi fires `session_start` with the file you just left. This extension
+records that onto a small navigation stack so **`/find-back`** replays it in
+reverse: a browser-style back across sessions **and** projects.
+
+- Repeat `/find-back` to walk further back through the chain.
+- Deleted sessions at the top of the stack are skipped automatically.
+- A one-shot guard prevents ping-pong: the back-jump itself isn't re-recorded,
+  so the next `/find-back` goes one step further, not back to where you were.
+
+The stack lives in `~/.pi/agent/session-finder/backstack.json` (honours
+`PI_CODING_AGENT_DIR`). It is **on disk**, not in memory, because a cross-project
+jump reloads this extension module and would wipe in-memory state. It is capped
+at 50 entries.
 
 ### Where it works
 
@@ -85,11 +103,15 @@ Env-var knobs (pi extensions don't expose a config API yet):
 
 ```
 src/
-├── index.ts     # factory: registers /find; scan → rank → select → switchSession
+├── index.ts     # factory: registers /find + /find-back; scan → rank → select → switchSession
+├── history.ts   # pure back-navigation logic: record switches, suppress ping-pong, pop for /find-back
+├── finder.ts    # custom TUI component: scrollable list + live fuzzy filter + rich preview pane
+├── parse.ts     # JSONL parse → recap (intent/last action/outcome) + rich facets + match locator
 └── search.ts    # pure helpers: parseQuery / matchSession / rankMatches / extractSnippet (+ projName, ago)
 test/
-├── search.test.ts   # unit tests for the pure search logic
-└── wiring.test.ts   # smoke test: real module load + /find registration + handler guards
+├── history.test.ts   # unit tests for the pure back-navigation logic
+├── search.test.ts    # unit tests for the pure search logic
+└── wiring.test.ts    # smoke test: real module load + /find + /find-back registration + guards
 ```
 
 `search.ts` has **no pi imports**, so the core logic is fully unit-testable.
@@ -111,8 +133,9 @@ npm run typecheck
 - **Shipped beyond MVP:** custom TUI finder with live filter + a **rich preview
   pane** (models / tool histogram / files modified / cost — PLAN item 1),
   `<`/`>` **peek paging** through the transcript (item 5), **RRF rank-fusion**
-  opt-in (item 6), and **recap-at-landing** + match locator on jump (item 7).
-  All in-memory, no DB/cache/index. See `PLAN.md`.
+  opt-in (item 6), **recap-at-landing** + match locator on jump (item 7), and
+  **`/find-back`** universal back-navigation across sessions/projects. All
+  in-memory (search) / on-disk (back stack), no DB/cache/index. See `PLAN.md`.
 - **v1:** richer settings once pi exposes a config API; RRF default flip (gated
   on the gold-set benchmark, PRD §10).
 - **v1.1:** `pi --find` CLI flag; `matchMode` (or/phrase) + `rankMode: "bm25"`.

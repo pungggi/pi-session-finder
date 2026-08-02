@@ -203,6 +203,8 @@ gated on the PRD §10 benchmark.
 | 6 | ✅ done | independent of UI; pure; lowest risk | `PI_FIND_RANK_MODE=rrf` env (opt-in; real config layer in item 1) | minor |
 | 1 | ✅ done | introduces the parser + pane layout that 5 builds on | `PI_FIND_RICH_PREVIEW=0` env (default `true`) | minor |
 | 5 | ✅ done | reuses 1's pane + focus hook | `<`/`>` keys (always on) | patch |
+| 7 | ✅ done | recap-at-landing + match locator | always on (best-effort) | minor |
+| 8 | ✅ done | `/find-back` universal back-navigation | `/find-back` command (always on) | minor |
 
 Each ships behind its own toggle and its own version bump — no big-bang.
 
@@ -262,6 +264,66 @@ branches; match-locator index); malformed/missing → null.
 
 **Risk:** none of the extension-API variety beyond the blocked auto-scroll;
 mainly content-quality of the heuristic next-step (iterate after dogfooding).
+
+---
+
+## Item 8 — `/find-back`: universal back-navigation across sessions/projects
+
+**Goal:** after `/find` (or `/resume`, `/new`, `/fork`, `/clone`) drops you into
+a different session+project, let you jump **back** to where you came from — a
+browser-style back, repeatable to walk the whole chain.
+
+**Why this is its own item (and not trivial):** a cross-cwd switch makes pi
+invalidate the extension module cache (`clearExtensionCache`, verified in
+`core/extensions/loader.js`) and re-import the module. Top-level `let` state is
+wiped on every jump — so the navigation stack **cannot** live in memory. It is
+persisted to disk; the module exposes only pure logic so it stays unit-testable.
+
+**Mechanism:**
+
+- pi emits `session_start { reason, previousSessionFile }` for every real
+  switch (`new` / `resume` / `fork`; `startup` / `reload` carry no previous
+  file). A handler records `previousSessionFile` onto a stack.
+- `pi.registerCommand("find-back", …)` pops the top and `ctx.switchSession`es
+  to it. Repeat to walk further back. Empty stack → info notify.
+
+**State — `~/.pi/agent/session-finder/backstack.json`** (honours
+`PI_CODING_AGENT_DIR`):
+
+```ts
+interface BackState {
+  stack: string[];      // previous-session file paths, oldest first; top = last
+  suppressNext: boolean; // one-shot: /find-back arms it so its own switch isn't re-pushed
+}
+```
+
+Writes are temp-file + `rename` (atomic-ish) so a crash mid-switch can't leave
+a half-written file. Stack capped at 50 (oldest evicted).
+
+**Ping-pong guard:** `/find-back` is itself a switch → it would fire another
+`session_start` and re-push the session we just left, making back toggle
+forever. Before switching, `/find-back` sets `suppressNext`; the next
+`session_start` consumes it (returns the flag cleared, records nothing). The
+flag lives on disk so it survives the reload, and is consumed exactly once —
+normal recording resumes immediately after.
+
+**Stale-entry handling:** before popping, deleted sessions are trimmed from the
+top of the stack (`existsSync`), so a back never targets a gone file. If the
+switch is vetoed (`result.cancelled`), the popped entry is restored and the
+suppress flag cleared, so no state is lost.
+
+**Files:**
+
+| File | Role |
+|---|---|
+| `src/history.ts` (new) | pure: `applySessionStart` / `popForBack` / `dropMissingTop` + `BackState` |
+| `src/index.ts` | `session_start` handler (disk I/O) + `/find-back` command + store helpers |
+| `test/history.test.ts` (new) | unit tests for the pure logic incl. the ping-pong flow |
+| `test/wiring.test.ts` | `/find-back` registration + handler guards + disk-backed switch |
+
+**Out of scope (future):** a matching `/find-forward`; richer back notify
+(session name/project + recap card, like `/find` lands). v1 keeps the notify
+intentionally minimal.
 
 ---
 
