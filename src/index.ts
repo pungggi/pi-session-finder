@@ -210,18 +210,19 @@ export default function (pi: ExtensionAPI) {
 	// fork) so `/find-back` can replay it. Bookkeeping only — never notify, never
 	// throw. See history.ts for why this state lives on disk, not in memory.
 	pi.on("session_start", async (event) => {
-		const previous =
-			event.reason === "new" || event.reason === "resume" || event.reason === "fork"
-				? event.previousSessionFile
-				: undefined;
+		const reasonHasPrev =
+			event.reason === "new" || event.reason === "resume" || event.reason === "fork";
+		const rawPrev = reasonHasPrev ? event.previousSessionFile : undefined;
+		// Only record back-targets that exist on disk: a never-persisted session
+		// (e.g. a fresh session you /find from before sending any message) has a path
+		// but no file, and can't be resumed. applySessionStart still clears an armed
+		// suppressNext even when `previous` is undefined.
+		const previous = rawPrev && existsSync(rawPrev) ? rawPrev : undefined;
 		try {
-			// applySessionStart returns the SAME reference when nothing changed
-			// (startup/reload/dedup), so we only touch disk on a real state change —
-			// less churn, fewer chances to hit a transient fs error.
 			const before = readBackState();
 			const next = applySessionStart(before, previous);
 			if (next !== before) writeBackState(next);
-			debugLog(`session_start reason=${event.reason} previous=${previous ?? "(none)"} stackLen=${next.stack.length} suppress=${next.suppressNext}`);
+			debugLog(`session_start reason=${event.reason} rawPrev=${rawPrev ?? "(none)"} persisted=${rawPrev ? existsSync(rawPrev) : false} stackLen=${next.stack.length} suppress=${next.suppressNext}`);
 		} catch {
 			/* never break a session start over back-stack bookkeeping */
 		}
@@ -323,18 +324,22 @@ export default function (pi: ExtensionAPI) {
 			const pickProject = projName(pickedMatch?.info.cwd ?? "");
 			const terms = pickedMatch?.terms ?? [];
 
-			// Record the jump ORIGIN for /find-back BEFORE switching. This is
-			// authoritative for /find jumps and does not depend on the session_start
-			// event firing (which some flows can miss). The session_start handler still
-			// covers /resume|/new|/fork; applySessionStart dedups against the top, so
-			// recording the same transition twice is harmless.
+			// Record the jump ORIGIN for /find-back BEFORE switching — but only if it
+			// actually exists on disk. A fresh session you /find from before sending
+			// any message is never written to disk (getSessionFile() returns a path
+			// with no file), and recording it would give /find-back a target it can't
+			// resume (it'd be dropped as stale). This path is authoritative for /find
+			// jumps; the session_start handler covers /resume|/new|/fork, and
+			// applySessionStart dedups so recording twice is harmless.
 			try {
 				const origin = ctx.sessionManager?.getSessionFile?.();
-				if (origin) {
+				if (origin && existsSync(origin)) {
 					const before = readBackState();
 					const next = applySessionStart(before, origin);
 					if (next !== before) writeBackState(next);
-					debugLog(`find jump origin=${origin} target=${targetPath} stackLen=${next.stack.length}`);
+					debugLog(`find back-target=${origin} target=${targetPath} stackLen=${next.stack.length}`);
+				} else {
+					debugLog(`find no back-target (origin=${origin ?? "(none)"} persisted=${origin ? existsSync(origin) : false})`);
 				}
 			} catch {
 				/* never block a jump over back-stack bookkeeping */
