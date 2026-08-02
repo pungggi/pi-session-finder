@@ -58,11 +58,24 @@ that points you at the (planned) `pi --find` CLI flag.
   surrogate — rare terms disambiguate better), trimmed to token boundaries,
   whitespace-collapsed.
 - **Ranking:** name hit first → more matched terms → more recent.
+- **Preview pane:** focusing a match lazily parses that session's JSONL and
+  shows the **models** used, a **tool histogram**, **files modified** (from
+  edit/write calls), and **cost · tokens** consumed — above the keyword-centered
+  snippet. Set `PI_FIND_RICH_PREVIEW=0` to keep the pane snippet-only.
 - **Experimental RRF:** set `PI_FIND_RANK_MODE=rrf` to fuse four independent
   signals (metadata, term coverage, recency, term frequency) via Reciprocal
   Rank Fusion instead of the hand-tuned order. Off by default — it becomes the
   default only if it beats the heuristic on the gold set. (`bm25` is reserved
   and currently behaves like the default.)
+
+## Configuration
+
+Env-var knobs (pi extensions don't expose a config API yet):
+
+| Variable | Default | Effect |
+|---|---|---|
+| `PI_FIND_RICH_PREVIEW` | `1` | `0` disables the models/tools/files/cost facet pane (snippet-only). |
+| `PI_FIND_RANK_MODE` | `heuristic` | `rrf` fuses four signals via Reciprocal Rank Fusion; `bm25` is reserved. |
 
 ## Project layout
 
@@ -91,8 +104,12 @@ npm run typecheck
 - **MVP (this release):** `/find` via `ctx.ui.select`; AND matching over
   `allMessagesText` + `name` + `cwd`; jump via `switchSession`. Usable &
   shippable.
-- **v1:** custom TUI finder (live filter, scope toggle, on-progress status),
-  `findSession` settings, `(mtime,size)`-keyed cache, richer snippets.
+- **Shipped beyond MVP:** custom TUI finder with live filter + a **rich preview
+  pane** (models / tool histogram / files modified / cost — PLAN item 1),
+  **RRF rank-fusion** opt-in (item 6), and **recap-at-landing** + match locator
+  on jump (item 7). All in-memory, no DB/cache/index. See `PLAN.md`.
+- **v1:** peek `>`/`<` paging (PLAN item 5); richer settings once pi exposes a
+  config API.
 - **v1.1:** `pi --find` CLI flag; `matchMode` (or/phrase) + `rankMode: "bm25"`.
 - **v2:** streaming results, fuzzy matching, optional content index.
 

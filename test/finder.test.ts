@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CURSOR_MARKER } from "@earendil-works/pi-tui";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { FinderComponent } from "../src/finder.js";
+import type { SessionDetail } from "../src/parse.js";
 
 // The preview renders snippets through pi's Markdown component, whose theme
 // functions read the global theme — initialize it once for this suite.
@@ -213,5 +214,96 @@ describe("FinderComponent", () => {
 		expect(out).toContain("Meeting object"); // table cell rendered
 		// Renderer-safe: no array entry may carry an embedded newline (the desync bug).
 		for (const row of rows) expect(row).not.toMatch(/[\n\r]/);
+	});
+});
+
+// ── rich facets (item 1) ─────────────────────────────────────────
+
+describe("FinderComponent — rich facets", () => {
+	/** Flush the loadDetail promise chain (.then → .catch → .finally). */
+	const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+	const detail: SessionDetail = {
+		recap: {
+			intent: "x",
+			lastAction: "edit a.ts",
+			lastActionKind: "tool",
+			outcome: "landed",
+			messageCount: 2,
+		},
+		locator: null,
+		facets: {
+			models: ["anthropic/claude-3.5-sonnet", "openai/gpt-4o"],
+			toolCalls: [
+				{ name: "bash", count: 5 },
+				{ name: "edit", count: 3 },
+			],
+			filesModified: ["src/retry.ts", "test/retry.test.ts"],
+			totalCost: 0.42,
+			totalTokens: 1234567,
+		},
+	};
+
+	it("renders a 'loading' line, then the facet lines once loadDetail resolves", async () => {
+		const f = new FinderComponent({
+			title: "t",
+			entries,
+			theme,
+			loadDetail: (p) => Promise.resolve(p === "/a.jsonl" ? detail : null),
+		});
+		f.requestRender = () => {};
+		expect(f.render(80).join("\n")).toContain("loading"); // /a.jsonl in flight
+		await flush();
+		const out = f.render(80).join("\n");
+		expect(out).toContain("Models: anthropic/claude-3.5-sonnet, openai/gpt-4o");
+		expect(out).toContain("Tools: bash(5), edit(3)");
+		expect(out).toContain("Modified: src/retry.ts, test/retry.test.ts");
+		expect(out).toContain("$0.42");
+		expect(out).toContain("1.2M tokens");
+	});
+
+	it("falls back to snippet-only when loadDetail resolves null", async () => {
+		const f = new FinderComponent({
+			title: "t",
+			entries,
+			theme,
+			loadDetail: () => Promise.resolve(null),
+		});
+		f.requestRender = () => {};
+		expect(f.render(80).join("\n")).toContain("loading");
+		await flush();
+		const out = f.render(80).join("\n");
+		expect(out).not.toContain("Models:");
+		expect(out).not.toContain("loading");
+		expect(out).toContain("stripe webhook signature"); // snippet still there
+	});
+
+	it("renders no facet / loading lines when loadDetail is unset (rich preview off)", () => {
+		const f = new FinderComponent({ title: "t", entries, theme });
+		const out = f.render(80).join("\n");
+		expect(out).not.toContain("Models:");
+		expect(out).not.toContain("loading");
+	});
+
+	it("caches per path and does not reload on re-focus", async () => {
+		let calls = 0;
+		const f = new FinderComponent({
+			title: "t",
+			entries,
+			theme,
+			loadDetail: (p) => {
+				calls++;
+				return Promise.resolve(p === "/a.jsonl" ? detail : null);
+			},
+		});
+		f.requestRender = () => {};
+		await flush();
+		expect(calls).toBe(1); // /a.jsonl on init
+		f.handleInput("\x1b[B"); // ↓ → /b.jsonl
+		await flush();
+		expect(calls).toBe(2); // /b.jsonl loaded
+		f.handleInput("\x1b[A"); // ↑ → back to /a.jsonl (cached)
+		await flush();
+		expect(calls).toBe(2); // not reloaded
 	});
 });

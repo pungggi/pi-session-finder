@@ -1,27 +1,27 @@
 /**
- * pi-session-finder — lazy session detail parser (PLAN.md item 7).
+ * pi-session-finder — lazy session detail parser (PLAN.md items 1 & 7).
  *
- * Reads a session JSONL on demand and derives:
- *   - a "Previously on…" recap (intent / last action / outcome / heuristic
- *     next step) shown in a widget after we jump into the session; and
- *   - a match locator: the entry id + 1-based index of the message containing
- *     the least-common query term, plus a text window around it. We can't
- *     auto-scroll to it (no API — see PLAN.md item 7 / the upstream issue), so
- *     the card surfaces the content + position so the user can find it.
+ * Reads a session JSONL on demand, in a single pass, and derives:
+ *   - rich facets (item 1): models used, tool-call histogram, files modified,
+ *     total cost/tokens — shown in the finder preview pane;
+ *   - a "Previously on…" recap (item 7): intent / last action / outcome /
+ *     heuristic next step — shown in a widget after we jump into the session;
+ *   - a match locator (item 7): entry id + 1-based index of the message
+ *     containing the least-common query term, plus a text window around it.
+ *     We can't auto-scroll to it (no API — see PLAN.md item 7 / the upstream
+ *     issue), so the card surfaces the content + position so the user can.
  *
  * No pi imports — operates on raw JSONL text + `node:fs`. Fully unit-testable
  * via {@link parseSessionDetailText}.
  *
  * Schema (verified against real session files):
- *   - entry envelope: { type, id, timestamp, message?, summary? }
+ *   - entry envelope: { type, id, timestamp, message?, summary?, provider?, modelId? }
  *   - message.role ∈ "user" | "assistant" | "toolResult"
+ *   - assistant message carries `provider`/`model` + `usage{ cost.total, totalTokens }`
  *   - assistant content[] blocks: {type:"text",text} | {type:"toolCall",name,arguments}
  *   - toolResult message: { toolName, isError, content, details }
  *   - compaction entry: { type:"compaction", summary }
- *
- * NB: item 1's rich facets (models / tool histogram / files-modified / cost)
- * are not collected here yet — `SessionDetail` is shaped so they can be added
- * to this same module without changing the recap/locator contract.
+ *   - model_change entry: { type:"model_change", provider, modelId }
  */
 
 import { readFileSync } from "node:fs";
@@ -53,15 +53,33 @@ export interface MatchLocator {
 	text: string;
 }
 
+/** Rich preview facets (PLAN item 1) — models / tools / files / cost. */
+export interface SessionFacets {
+	/** `${provider}/${model}`, first-seen order, deduped. */
+	models: string[];
+	/** Tool-call histogram, count desc then name asc, top 5. */
+	toolCalls: { name: string; count: number }[];
+	/** Distinct `arguments.path` from edit/write toolCalls, first-seen, top 10. */
+	filesModified: string[];
+	/** Summed `usage.cost.total` across assistant messages, if any. */
+	totalCost?: number;
+	/** Summed `usage.totalTokens` across assistant messages, if any. */
+	totalTokens?: number;
+}
+
 export interface SessionDetail {
 	recap: SessionRecap;
 	locator: MatchLocator | null;
+	facets: SessionFacets;
 }
 
 const INTENT_MAX = 300;
 const ACTION_MAX = 120;
 const STEP_MAX = 100;
 const LOCATOR_WINDOW = 320;
+const MODELS_MAX = 8;
+const TOOLS_MAX = 5;
+const FILES_MAX = 10;
 
 type Obj = Record<string, unknown>;
 interface ToolCallInfo {
@@ -102,6 +120,22 @@ export function parseSessionDetailText(
 	let lastUserMessage = "";
 	let lastEntryRole: "user" | "assistant" | "toolResult" | null = null;
 
+	// Facet accumulators (item 1) — filled in the same single pass.
+	const models: string[] = [];
+	const modelsSeen = new Set<string>();
+	const toolCount = new Map<string, number>();
+	const filesModified: string[] = [];
+	const filesSeen = new Set<string>();
+	let totalCost: number | undefined;
+	let totalTokens: number | undefined;
+
+	const addModel = (key: string): void => {
+		if (key && !modelsSeen.has(key)) {
+			modelsSeen.add(key);
+			models.push(key);
+		}
+	};
+
 	for (const line of raw.split("\n")) {
 		const cleaned = line.replace(/^\uFEFF/, "").trim();
 		if (!cleaned) continue;
@@ -115,6 +149,12 @@ export function parseSessionDetailText(
 		if (obj.type === "compaction") {
 			const s = obj.summary;
 			if (typeof s === "string" && s) lastCompactionSummary = s; // latest wins
+			continue;
+		}
+		if (obj.type === "model_change") {
+			const provider = typeof obj.provider === "string" ? obj.provider : "";
+			const modelId = typeof obj.modelId === "string" ? obj.modelId : "";
+			if (provider && modelId) addModel(`${provider}/${modelId}`);
 			continue;
 		}
 		if (obj.type !== "message") continue;
@@ -135,8 +175,34 @@ export function parseSessionDetailText(
 		} else if (role === "assistant") {
 			const a = extractTextContent(msg.content);
 			if (a) lastAssistantText = a;
-			const tc = lastToolCallIn(msg.content);
-			if (tc) lastToolCall = tc;
+			// Tool histogram + files-modified (item 1 facets) AND the last tool
+			// call for the recap (item 7) — one scan of content[].
+			const calls = toolCallsIn(msg.content);
+			if (calls.length) {
+				lastToolCall = calls[calls.length - 1];
+				for (const c of calls) {
+					toolCount.set(c.name, (toolCount.get(c.name) ?? 0) + 1);
+					if (c.name === "edit" || c.name === "write") {
+						const p = typeof c.args.path === "string" ? c.args.path : "";
+						if (p && !filesSeen.has(p)) {
+							filesSeen.add(p);
+							filesModified.push(p);
+						}
+					}
+				}
+			}
+			// Models + cost/tokens (item 1 facets).
+			const provider = typeof msg.provider === "string" ? msg.provider : "";
+			const model = typeof msg.model === "string" ? msg.model : "";
+			if (provider && model) addModel(`${provider}/${model}`);
+			const usage = msg.usage as Obj | undefined;
+			if (usage && typeof usage === "object") {
+				const cost = usage.cost as Obj | undefined;
+				const ct = cost && typeof cost.total === "number" ? cost.total : undefined;
+				const tt = typeof usage.totalTokens === "number" ? usage.totalTokens : undefined;
+				if (typeof ct === "number") totalCost = (totalCost ?? 0) + ct;
+				if (typeof tt === "number") totalTokens = (totalTokens ?? 0) + tt;
+			}
 		} else if (role === "toolResult") {
 			if (typeof msg.isError === "boolean") lastToolResultIsError = msg.isError;
 		}
@@ -188,8 +254,19 @@ export function parseSessionDetailText(
 		messageCount: messages.length,
 	};
 
+	const facets: SessionFacets = {
+		models: models.slice(0, MODELS_MAX),
+		toolCalls: [...toolCount.entries()]
+			.map(([name, count]) => ({ name, count }))
+			.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+			.slice(0, TOOLS_MAX),
+		filesModified: filesModified.slice(0, FILES_MAX),
+		totalCost,
+		totalTokens,
+	};
+
 	const locator = buildLocator(messages, queryTerms, caseSensitive);
-	return { recap, locator };
+	return { recap, locator, facets };
 }
 
 // ── content extraction ──────────────────────────────────────────────
@@ -235,11 +312,6 @@ function toolCallsIn(content: unknown): ToolCallInfo[] {
 		}
 	}
 	return out;
-}
-
-function lastToolCallIn(content: unknown): ToolCallInfo | null {
-	const calls = toolCallsIn(content);
-	return calls.length ? calls[calls.length - 1] : null;
 }
 
 function renderToolCall(tc: ToolCallInfo): string {

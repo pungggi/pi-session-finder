@@ -90,6 +90,21 @@ export function parseSessionDetail(path: string): SessionDetail | null
 filesModified/cost; malformed line skipped; missing file → `null`; `edit`/`write`
 captured, `bash`/`read` excluded from filesModified.
 
+**Status (2026-08): ✅ shipped.** Reconciled with item 7 (which landed first and
+reshaped `SessionDetail`): facets live under `SessionDetail.facets` —
+`{ models, toolCalls, filesModified, totalCost?, totalTokens? }` — collected in
+the same single JSONL walk as the recap/locator (no second pass). `model_change`
+entries contribute `provider/modelId`; assistant messages contribute
+`provider/model` plus per-turn `usage.cost.total` / `usage.totalTokens` (summed =
+total consumed; verified on a 12 MB / 2540-msg session, 42 ms). `finder.ts`
+loads facets **async on focus** (`detailCache` + `pending`, deferred via
+`setImmediate` so navigation never blocks); `index.ts` gates it on
+`cfg.richPreview`. The opt-in is the `PI_FIND_RICH_PREVIEW` env var — pi's
+`ExtensionAPI` exposes no config accessor, so env vars are the only API-free
+surface (item 6's `rankMode` migrated into the same `FindConfig`). Default
+`true`. Tests: +6 parse-facet, +4 finder facet-render (load→resolve, null
+fallback, off, cache-no-reload).
+
 ---
 
 ## Item 5 — Peek / page key
@@ -169,7 +184,7 @@ gated on the PRD §10 benchmark.
 | # | Order | Why | Setting | Version |
 |---|---|---|---|---|
 | 6 | ✅ done | independent of UI; pure; lowest risk | `PI_FIND_RANK_MODE=rrf` env (opt-in; real config layer in item 1) | minor |
-| 1 | 2nd | introduces the parser + pane layout that 5 builds on | `richPreview` (default `true`) | minor |
+| 1 | ✅ done | introduces the parser + pane layout that 5 builds on | `PI_FIND_RICH_PREVIEW=0` env (default `true`) | minor |
 | 5 | 3rd | reuses 1's pane + focus hook | — | patch |
 
 Each ships behind its own toggle and its own version bump — no big-bang.

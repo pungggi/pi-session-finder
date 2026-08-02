@@ -28,6 +28,7 @@ import {
 	projName,
 	rankMatches,
 	type RankedMatch,
+	type RankMode,
 	type SearchConfig,
 	type SessionInfoLike,
 } from "./search.js";
@@ -42,17 +43,49 @@ function day(d: Date): string {
 	return d.toISOString().slice(0, 10);
 }
 
-/**
- * Resolve the runtime search config. Rank mode is an experimental opt-in via
- * the `PI_FIND_RANK_MODE` env var (`heuristic` | `rrf` | `bm25`); default stays
- * `heuristic` until RRF is benchmarked vs. the gold set (PLAN item 6 / PRD §10).
- * Migrate to a real config layer when item 1 lands one.
- */
-function resolveSearchConfig(): SearchConfig {
-	const mode = (process.env.PI_FIND_RANK_MODE ?? "").trim().toLowerCase();
-	return mode === "rrf" || mode === "bm25" || mode === "heuristic"
-		? { ...DEFAULT_CONFIG, rankMode: mode }
-		: DEFAULT_CONFIG;
+/** Runtime finder config (the "config layer" PLAN items 1 & 6 share). pi's
+ *  ExtensionAPI exposes no config accessor, so these are env-var knobs — the
+ *  only API-free surface. Migrate to a `.pi/`-file layer if richer per-project
+ *  settings are ever needed. */
+interface FindConfig {
+	/** Rich preview pane (item 1). Default `true`; `PI_FIND_RICH_PREVIEW=0` off. */
+	richPreview: boolean;
+	/** Ranking strategy (item 6). Default `heuristic`; opt-in `rrf` / `bm25`. */
+	rankMode: RankMode;
+}
+
+function resolveFindConfig(): FindConfig {
+	return {
+		richPreview: parseBoolEnv(process.env.PI_FIND_RICH_PREVIEW, true),
+		rankMode: parseRankMode(process.env.PI_FIND_RANK_MODE),
+	};
+}
+
+/** Empty/blank → `dflt`; `0|false|no|off` → false; anything else → true. */
+function parseBoolEnv(v: string | undefined, dflt: boolean): boolean {
+	const s = (v ?? "").trim().toLowerCase();
+	if (!s) return dflt;
+	return !["0", "false", "no", "off"].includes(s);
+}
+
+function parseRankMode(v: string | undefined): RankMode {
+	const s = (v ?? "").trim().toLowerCase();
+	return s === "rrf" || s === "bm25" ? s : "heuristic";
+}
+
+/** Item 1: defer a facet parse off the input path via setImmediate so arrow-key
+ *  navigation never blocks. The read is fast (tens of ms) but yielding keeps the
+ *  filter loop responsive. */
+function loadDetailDeferred(path: string): Promise<SessionDetail | null> {
+	return new Promise((resolve) =>
+		setImmediate(() => {
+			try {
+				resolve(parseSessionDetail(path));
+			} catch {
+				resolve(null);
+			}
+		}),
+	);
 }
 
 /** Build finder rows (header + preview fields) shared by the TUI and RPC pickers. */
@@ -128,7 +161,9 @@ export default function (pi: ExtensionAPI) {
 			}
 			ctx.ui.setStatus("find", undefined);
 
-			const matches = rankMatches(sessions, query, resolveSearchConfig());
+			const cfg = resolveFindConfig();
+		const searchCfg: SearchConfig = { ...DEFAULT_CONFIG, rankMode: cfg.rankMode };
+		const matches = rankMatches(sessions, query, searchCfg);
 			if (matches.length === 0) {
 				ctx.ui.notify(`No sessions matched "${query}"`, "info");
 				return;
@@ -150,7 +185,13 @@ export default function (pi: ExtensionAPI) {
 						// matches and a much larger preview/context pane on tall terms.
 						const rows = (tui as { terminal?: { rows?: number } }).terminal?.rows ?? 24;
 						const targetHeight = clamp(Math.floor(rows * 0.82), 14, Math.max(14, rows - 2));
-						const finder = new FinderComponent({ title, entries, theme, targetHeight });
+						const finder = new FinderComponent({
+							title,
+							entries,
+							theme,
+							targetHeight,
+							loadDetail: cfg.richPreview ? loadDetailDeferred : undefined,
+						});
 						finder.onSelect = (path) => done(path);
 						finder.onCancel = () => done(null);
 						finder.requestRender = () => tui.requestRender();

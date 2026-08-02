@@ -3,14 +3,21 @@
  *
  * Layout: a compact, filterable, scrollable list of one-line **headers** with a
  * **detail/preview pane** beneath that shows the focused result's title, its
- * project path / date / message count, and a longer keyword-centered snippet
- * (the search terms highlighted).
+ * project path / date / message count, optional **rich facets** (models / tool
+ * histogram / files modified / cost — PLAN item 1, lazy-loaded), and a longer
+ * keyword-centered snippet (the search terms highlighted).
  *
  * UX (fzf-like):
  *   - type            → fuzzy-filter the results live (over header + snippet)
  *   - ↑/↓, PgUp/PgDn  → move selection; the preview pane follows the focus
  *   - Enter           → jump to the focused session
  *   - Esc / Ctrl+C    → cancel
+ *
+ * Rich facets (item 1) are parsed **on demand**: when a row gains focus and a
+ * `loadDetail` hook is wired, the component kicks off an async parse (off the
+ * input path), caches it per path, and renders the facet lines once resolved —
+ * showing a dim "loading…" line meanwhile and falling back to snippet-only on a
+ * null/missing detail. Late resolves just populate the cache (harmless).
  *
  * Implementation note: the filter is tracked as a plain string and rendered as
  * a plain text line — we deliberately do NOT embed a focused `Input` component.
@@ -32,6 +39,7 @@ import {
 	type SelectItem,
 	type SelectListTheme,
 } from "@earendil-works/pi-tui";
+import type { SessionDetail } from "./parse.js";
 
 /** One result, carrying everything the list row and the preview pane need. */
 export interface FinderEntry {
@@ -62,6 +70,10 @@ export interface FinderOptions {
 	maxVisible?: number;
 	/** Preview snippet rows. Overrides the target-derived value. */
 	snippetLines?: number;
+	/** Lazy rich-facet loader (PLAN item 1). When set, the component parses the
+	 * focused session's facets on demand (async), caches them per path, and
+	 * renders them above the snippet. Omit to keep the pane snippet-only. */
+	loadDetail?: (path: string) => Promise<SessionDetail | null>;
 }
 
 export const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
@@ -72,6 +84,13 @@ export const clamp = (n: number, lo: number, hi: number): number => Math.max(lo,
  * row, and an embedded \n desyncs the hardware cursor so stale frames stack. */
 const singleLine = (s: string): string =>
 	s.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+
+/** Format a token count compactly: 1_234_567 → "1.2M tokens". */
+function formatTokens(n: number): string {
+	if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M tokens`;
+	if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k tokens`;
+	return `${n} tokens`;
+}
 
 /** True for a key sequence that should be inserted into the filter text. */
 function isPrintable(data: string): boolean {
@@ -96,6 +115,11 @@ export class FinderComponent implements Component {
 	private readonly entries: FinderEntry[];
 	private readonly byPath: Map<string, FinderEntry>;
 	private readonly filter: { value: string } = { value: "" };
+	private readonly loadDetail?: (path: string) => Promise<SessionDetail | null>;
+	/** Per-path facet cache: undefined = not loaded, null = loaded-but-none. */
+	private readonly detailCache = new Map<string, SessionDetail | null>();
+	/** Paths whose loadDetail() is in flight (drives the "loading…" line). */
+	private readonly pending = new Set<string>();
 	private list: SelectList;
 	private focusedEntry: FinderEntry | null;
 	/** Markdown renderer (pi's own chat renderer) for the preview snippet. */
@@ -113,7 +137,7 @@ export class FinderComponent implements Component {
 		this.title = opts.title;
 		this.entries = opts.entries;
 		this.byPath = new Map(this.entries.map((e) => [e.path, e]));
-		this.focusedEntry = this.entries[0] ?? null;
+		this.loadDetail = opts.loadDetail;
 		// Reuse pi's chat markdown theme so the preview looks like the real chat
 		// (tables, headings, code blocks, lists, bold, …).
 		this.markdownTheme = getMarkdownTheme();
@@ -128,6 +152,8 @@ export class FinderComponent implements Component {
 		this.maxSnippet = opts.snippetLines ?? (opts.targetHeight ? clamp(opts.targetHeight - 12, 8, 24) : 4);
 
 		this.list = this.makeList(this.headerItems());
+		this.focusedEntry = null;
+		this.setFocus(this.entries[0] ?? null);
 	}
 
 	private headerItems(): SelectItem[] {
@@ -151,9 +177,33 @@ export class FinderComponent implements Component {
 		list.onSelect = (item) => this.onSelect?.(item.value);
 		list.onCancel = () => this.onCancel?.();
 		list.onSelectionChange = (item) => {
-			this.focusedEntry = this.byPath.get(item.value) ?? null;
+			this.setFocus(this.byPath.get(item.value) ?? null);
 		};
 		return list;
+	}
+
+	/** Set the focused entry and trigger a lazy facet load for it. */
+	private setFocus(entry: FinderEntry | null): void {
+		this.focusedEntry = entry;
+		if (entry) this.maybeLoadDetail(entry.path);
+	}
+
+	/** Kick off an async facet parse for `path` if not already cached/pending. */
+	private maybeLoadDetail(path: string): void {
+		if (!this.loadDetail) return;
+		if (this.detailCache.has(path) || this.pending.has(path)) return;
+		this.pending.add(path);
+		void this.loadDetail(path)
+			.then((d) => {
+				this.detailCache.set(path, d);
+			})
+			.catch(() => {
+				this.detailCache.set(path, null); // treat error as no detail
+			})
+			.finally(() => {
+				this.pending.delete(path);
+				this.requestRender();
+			});
 	}
 
 	/** Recompute the visible list from the current filter text (fuzzy). */
@@ -167,7 +217,36 @@ export class FinderComponent implements Component {
 				})
 			: all;
 		this.list = this.makeList(items);
-		this.focusedEntry = items[0] ? (this.byPath.get(items[0].value) ?? null) : null;
+		this.setFocus(items[0] ? (this.byPath.get(items[0].value) ?? null) : null);
+	}
+
+	/** Rich facet lines for the focused entry (item 1). Empty when rich preview
+	 *  is off, when loading is in flight (→ single dim line), or when the detail
+	 *  is null/absent (snippet-only fallback). */
+	private renderFacetLines(e: FinderEntry, width: number): string[] {
+		const th = this.theme;
+		if (!this.loadDetail) return []; // rich preview disabled → snippet-only
+		const path = e.path;
+		if (this.pending.has(path)) return [th.fg("dim", "loading details…")];
+		const detail = this.detailCache.get(path);
+		if (!detail) return []; // absent or parsed-null
+		const f = detail.facets;
+		const lines: string[] = [];
+		if (f.models.length) {
+			lines.push(th.fg("muted", truncateToWidth(`Models: ${f.models.join(", ")}`, width, "…")));
+		}
+		if (f.toolCalls.length) {
+			const parts = f.toolCalls.map((t) => `${t.name}(${t.count})`).join(", ");
+			lines.push(th.fg("muted", truncateToWidth(`Tools: ${parts}`, width, "…")));
+		}
+		if (f.filesModified.length) {
+			lines.push(th.fg("muted", truncateToWidth(`Modified: ${f.filesModified.join(", ")}`, width, "…")));
+		}
+		const bits: string[] = [];
+		if (typeof f.totalCost === "number") bits.push(`$${f.totalCost.toFixed(2)}`);
+		if (typeof f.totalTokens === "number") bits.push(formatTokens(f.totalTokens));
+		if (bits.length) lines.push(th.fg("muted", truncateToWidth(`Cost: ${bits.join(" · ")}`, width, "…")));
+		return lines;
 	}
 
 	handleInput(data: string): void {
@@ -220,13 +299,19 @@ export class FinderComponent implements Component {
 		// Separator + detail/preview pane for the focused result.
 		lines.push(th.fg("dim", "─".repeat(width)));
 		const e = this.focusedEntry;
-		// chrome = title + help + filter + separator + preview(title, detail) = 6.
-		const snippetBudget = this.targetHeight
-			? clamp(this.targetHeight - 6 - listRows.length, 4, this.maxSnippet)
-			: this.maxSnippet;
 		if (e) {
 			lines.push(th.fg("accent", th.bold(truncateToWidth(singleLine(e.title), width, "…"))));
 			lines.push(th.fg("muted", truncateToWidth(singleLine(e.detail), width, "…")));
+			// Rich facets (item 1): 0 lines when off/snippet-only, 1 while loading,
+			// up to 4 when resolved. Counted into the chrome so the snippet budget
+			// keeps the total tracking targetHeight.
+			const facetLines = this.renderFacetLines(e, width);
+			lines.push(...facetLines);
+			// chrome = title + help + filter + separator + preview(title, detail) = 6,
+			//          + facet lines.
+			const snippetBudget = this.targetHeight
+				? clamp(this.targetHeight - 6 - facetLines.length - listRows.length, 4, this.maxSnippet)
+				: this.maxSnippet;
 			// Preview snippet rendered as MARKDOWN via pi's own chat renderer, so
 			// headings, lists, tables and code blocks keep their structure instead of
 			// collapsing into a wall of text. Cached per snippet text. Each output line
@@ -257,5 +342,15 @@ export class FinderComponent implements Component {
 	/** Test/debug hook: current filter text. */
 	getFilterValue(): string {
 		return this.filter.value;
+	}
+
+	/** Test/debug hook: whether a facet load is in flight for `path`. */
+	isLoadingDetail(path: string): boolean {
+		return this.pending.has(path);
+	}
+
+	/** Test/debug hook: cached detail (undefined = not loaded, null = none). */
+	getCachedDetail(path: string): SessionDetail | null | undefined {
+		return this.detailCache.get(path);
 	}
 }
