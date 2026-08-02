@@ -10,11 +10,17 @@
  *   - TUI  → custom `FinderComponent`: scrollable list + live fuzzy filter.
  *   - RPC  → `ctx.ui.select` (headless picker).
  *   - print/json → no-op (point at the planned `pi --find` CLI flag).
+ *
+ * On jump (item 7, PLAN.md): a "Previously on…" recap widget is pinned above
+ * the editor in the resumed session — intent / last action / next step /
+ * outcome — plus a match locator (the matched message's content + its
+ * `message #N of M` position), since pi exposes no "scroll to message" API.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { FinderComponent, clamp, type FinderEntry } from "./finder.js";
+import { parseSessionDetail, type Outcome, type SessionDetail } from "./parse.js";
 import {
 	DEFAULT_CONFIG,
 	ago,
@@ -49,6 +55,32 @@ function buildEntries(matches: RankedMatch[]): FinderEntry[] {
 		const snippet = extractSnippet(m.info.allMessagesText, m.terms, previewCfg);
 		return { path: m.info.path, header, title, detail, snippet, terms: m.terms };
 	});
+}
+
+/** Item 7: render the landing recap card (intent / last action / next step /
+ *  outcome) plus the match locator, since we can't auto-scroll to the message. */
+function buildRecapCard(detail: SessionDetail, query: string, sessionName: string): string[] {
+	const r = detail.recap;
+	const lines: string[] = [];
+	lines.push(`Previously on "${sessionName}":`);
+	lines.push(`  What you were doing: ${r.intent}`);
+	lines.push(`  Last action: ${r.lastAction}`);
+	if (r.nextStep) lines.push(`  Next step: ${r.nextStep}`);
+	lines.push(`  Outcome: ${outcomeLabel(r.outcome)}`);
+	if (detail.locator) {
+		lines.push(`  ── match for "${query}" (no auto-scroll; navigate manually) ──`);
+		lines.push(`  message #${detail.locator.index} of ${detail.locator.total}:`);
+		lines.push(`  ${detail.locator.text}`);
+	} else if (query) {
+		lines.push(`  (matched session name/project, not the conversation)`);
+	}
+	return lines;
+}
+
+function outcomeLabel(o: Outcome): string {
+	if (o === "landed") return "landed (assistant closed it out)";
+	if (o === "abandoned") return "abandoned (last action errored)";
+	return "open (no closing turn)";
 }
 
 export default function (pi: ExtensionAPI) {
@@ -135,16 +167,46 @@ export default function (pi: ExtensionAPI) {
 			// Capture only plain data for withSession: the old command `ctx` is stale
 			// after replacement (PRD §8.3 / extensions.md "footguns").
 			const picked = entries.find((e) => e.path === targetPath);
+			const pickedMatch = capped.find((m) => m.info.path === targetPath) ?? null;
 			const pickName = picked?.title ?? "session";
-			const pickProject = projName(
-				capped.find((m) => m.info.path === targetPath)?.info.cwd ?? "",
-			);
+			const pickProject = projName(pickedMatch?.info.cwd ?? "");
+			const terms = pickedMatch?.terms ?? [];
 
 			// FR-4: switch session + cwd + trust in one call. The core re-runs project
 			// trust for the target cwd (PRD §2 / OQ1 — resolved affirmative).
 			const result = await ctx.switchSession(targetPath, {
 				withSession: async (rcx) => {
 					rcx.ui.notify(`Resumed "${pickName}" in ${pickProject}`, "info");
+					// Item 7: recap-at-landing + match locator (PLAN.md). Best-effort —
+					// never let it break the resume. No "scroll to message" API exists,
+					// so the card surfaces the matched message content + its position.
+					try {
+						const detail = parseSessionDetail(targetPath, terms, DEFAULT_CONFIG);
+						if (detail) {
+							rcx.ui.setWidget("find-recap", buildRecapCard(detail, query, pickName), {
+								placement: "aboveEditor",
+							});
+							// Dismiss as soon as the user starts typing (first keystroke);
+							// returning undefined leaves the keystroke unconsumed so it
+							// still reaches the editor.
+							let off: (() => void) | undefined;
+							off = rcx.ui.onTerminalInput((): undefined => {
+								try {
+									rcx.ui.setWidget("find-recap", undefined);
+								} catch {
+									/* widget may already be gone */
+								}
+								try {
+									off?.();
+								} catch {
+									/* already unsubscribed */
+								}
+								return undefined;
+							});
+						}
+					} catch {
+						/* recap is nice-to-have */
+					}
 				},
 			});
 

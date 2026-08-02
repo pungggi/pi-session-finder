@@ -245,9 +245,9 @@ Implemented via `pi.registerFlag("find", {...})`. If exactly one match, switch +
 | Phase | Scope | Outcome |
 |---|---|---|
 | **MVP** | `index.ts` + `search.ts`; `/find <q>` using `ctx.ui.select` for the picker (no custom TUI); AND matching over `allMessagesText`+`name`+`cwd`; jump via `switchSession`. | Usable, shippable. |
-| **v1** | Custom `FinderComponent` (§7): snippets, live filter, scope toggle, `onProgress` status. Settings (`findSession`). mtime cache. Tests. | Production polish. |
-| **v1.1** | `pi --find` CLI flag. `matchMode` (or/phrase). `rankMode: "bm25"` (BM25-lite ranking, D2). |
-| **v2** | Streaming results, fuzzy match scoring (Navarro 2001), optional content index for very large histories, jump-to-specific-message (anchor) inside the resumed session. *If* semantic recall is ever requested, follow the hierarchical/graph-memory trajectory (HiGMem — Cao et al. 2026; MemORAI — Pham Van et al. 2026); explicitly a non-goal until then (D7). |
+| **v1** | Custom `FinderComponent` (§7): snippets, live filter, scope toggle, `onProgress` status. Settings (`findSession`). mtime cache. Tests. **+ lazy rich preview pane (item 1), peek `>`/`<` paging (item 5), and recap-at-landing (item 7) — see `PLAN.md`.** | Production polish. |
+| **v1.1** | `pi --find` CLI flag. `matchMode` (or/phrase). `rankMode: "bm25" \| "rrf"` (BM25-lite D2; RRF rank-fusion — see `PLAN.md` item 6, default flip gated on §10 benchmark). |
+| **v2** | Streaming results, fuzzy match scoring (Navarro 2001), optional content index for very large histories, session-graph view + proactive jump suggestions (horizon H1/H2 — see `PLAN.md`). *Anchored "land at message" is API-blocked (PLAN.md item 7): no `openAt`/`entryId` on `switchSession`, no `scrollToEntry` in the extension API — recap-at-landing ships the feasible subset now; true auto-scroll needs an upstream pi API.* *If* semantic recall is ever requested, follow the hierarchical/graph-memory trajectory (HiGMem — Cao et al. 2026; MemORAI — Pham Van et al. 2026); explicitly a non-goal until then (D7). |
 
 ---
 
@@ -258,6 +258,7 @@ Implemented via `pi.registerFlag("find", {...})`. If exactly one match, switch +
 3. **OQ3:** Should we also surface **fork** (jump-and-branch) vs pure **resume** from a result? (Probably v2; keep MVP to resume.)
 4. **OQ4:** Indexing threshold — at how many sessions/MB does a cache/index become mandatory? **Resolution path:** measure cold-cache p50/p95 `listAll()` latency vs. session count/MB on the real machine + a 10k-session synthetic set; the §8.5 cache becomes mandatory where p95 crosses ~1 s (Arapakis et al. 2014). Full protocol in RESEARCH.md §3.3.
 5. **OQ5:** Search tool-call **inputs/outputs** too, or only message text? `allMessagesText` already includes rendered tool content — confirm coverage during MVP.
+6. **OQ6 (resolved — no action):** *Should `/find` also scan an archive directory (`~/.pi/agent/sessions-archive/`)?* **No — there is no archive in this pi version.** Verified against pi core: `SessionManager.listAll()` reads only `getSessionsDir()`, and pi has no `/archive` command, no `archiveDir` setting, no `PI_SESSION_ARCHIVE_DIR` env var, and never writes a `sessions-archive/` dir. `listAll()` therefore already returns the **complete** set of sessions. The `sessions-archive/` coverage advertised by `samfoy/pi-session-search` is that package's **own convention** (it honours an env var it defines itself), not a pi feature here. Revisit only if a future pi — or a rotation/memory package — introduces real session archival; until then, archive support would be speculative dead code (YAGNI).
 
 ---
 
