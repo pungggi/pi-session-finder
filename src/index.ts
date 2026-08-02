@@ -315,6 +315,23 @@ export default function (pi: ExtensionAPI) {
 			const pickProject = projName(pickedMatch?.info.cwd ?? "");
 			const terms = pickedMatch?.terms ?? [];
 
+			// Record the jump ORIGIN for /find-back BEFORE switching. This is
+			// authoritative for /find jumps and does not depend on the session_start
+			// event firing (which some flows can miss). The session_start handler still
+			// covers /resume|/new|/fork; applySessionStart dedups against the top, so
+			// recording the same transition twice is harmless.
+			try {
+				const origin = ctx.sessionManager?.getSessionFile?.();
+				if (origin) {
+					const before = readBackState();
+					const next = applySessionStart(before, origin);
+					if (next !== before) writeBackState(next);
+					debugLog(`find jump origin=${origin} target=${targetPath} stackLen=${next.stack.length}`);
+				}
+			} catch {
+				/* never block a jump over back-stack bookkeeping */
+			}
+
 			// FR-4: switch session + cwd + trust in one call. The core re-runs project
 			// trust for the target cwd (PRD §2 / OQ1 — resolved affirmative).
 			const result = await ctx.switchSession(targetPath, {
