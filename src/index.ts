@@ -19,7 +19,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { FinderComponent, clamp, type FinderEntry } from "./finder.js";
@@ -160,6 +160,38 @@ function debugLog(message: string): void {
 		else appendFileSync(file, line, "utf8");
 	} catch {
 		/* diagnostics must never break a session */
+	}
+}
+
+/** Resolve a resumable back-target from the origin session path.
+ *  - If the origin itself exists on disk, use it (the exact session you left).
+ *  - Otherwise (a fresh session you /find from before sending any message — pi
+ *    never writes it to disk), fall back to the most recent REAL session in the
+ *    same project, so /find-back still lands you back in the project you came
+ *    from instead of reporting "nothing to go back to".
+ *  Returns null only when the project has no resumable session at all.
+ *  `excludePath` (the session we're jumping TO) is never picked. */
+export function resolveBackTarget(origin: string | undefined | null, excludePath: string): string | null {
+	if (origin && existsSync(origin) && origin !== excludePath) return origin;
+	if (!origin) return null;
+	try {
+		const dir = dirname(origin);
+		if (!existsSync(dir)) return null;
+		let best: { file: string; mtime: number } | null = null;
+		for (const name of readdirSync(dir)) {
+			if (!name.endsWith(".jsonl")) continue;
+			const file = join(dir, name);
+			if (file === excludePath) continue;
+			try {
+				const mtime = statSync(file).mtimeMs;
+				if (!best || mtime > best.mtime) best = { file, mtime };
+			} catch {
+				/* skip unreadable */
+			}
+		}
+		return best?.file ?? null;
+	} catch {
+		return null;
 	}
 }
 
@@ -324,22 +356,23 @@ export default function (pi: ExtensionAPI) {
 			const pickProject = projName(pickedMatch?.info.cwd ?? "");
 			const terms = pickedMatch?.terms ?? [];
 
-			// Record the jump ORIGIN for /find-back BEFORE switching — but only if it
-			// actually exists on disk. A fresh session you /find from before sending
-			// any message is never written to disk (getSessionFile() returns a path
-			// with no file), and recording it would give /find-back a target it can't
-			// resume (it'd be dropped as stale). This path is authoritative for /find
-			// jumps; the session_start handler covers /resume|/new|/fork, and
-			// applySessionStart dedups so recording twice is harmless.
+			// Record a back-target for /find-back BEFORE switching. We prefer the exact
+			// origin (the session you're leaving), but if it isn't persisted yet (a fresh
+			// session you /find from before sending any message), fall back to your most
+			// recent real session in the same project — so /find-back always lands you
+			// back where you came from. This path is authoritative for /find jumps; the
+			// session_start handler covers /resume|/new|/fork, and applySessionStart
+			// dedups so recording twice is harmless.
 			try {
 				const origin = ctx.sessionManager?.getSessionFile?.();
-				if (origin && existsSync(origin)) {
+				const backTarget = resolveBackTarget(origin, targetPath);
+				if (backTarget) {
 					const before = readBackState();
-					const next = applySessionStart(before, origin);
+					const next = applySessionStart(before, backTarget);
 					if (next !== before) writeBackState(next);
-					debugLog(`find back-target=${origin} target=${targetPath} stackLen=${next.stack.length}`);
+					debugLog(`find back-target=${backTarget} origin=${origin ?? "(none)"} originExists=${origin ? existsSync(origin) : false} fallback=${backTarget !== origin} stackLen=${next.stack.length}`);
 				} else {
-					debugLog(`find no back-target (origin=${origin ?? "(none)"} persisted=${origin ? existsSync(origin) : false})`);
+					debugLog(`find no back-target (origin=${origin ?? "(none)"} originExists=${origin ? existsSync(origin) : false})`);
 				}
 			} catch {
 				/* never block a jump over back-stack bookkeeping */
