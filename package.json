@@ -25,6 +25,7 @@
   "type": "module",
   "main": "src/index.ts",
   "files": [
+    "CHANGELOG.md",
     "src",
     "docs",
     "README.md",
